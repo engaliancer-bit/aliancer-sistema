@@ -762,7 +762,7 @@ function App() {
         </div>
       </footer>
     </div>
- {process.env.NODE_ENV === 'development' && (
+      {process.env.NODE_ENV === 'development' && (
         <>
           <MemoryDiagnostics />
           <QueryPerformanceMonitor />
@@ -771,7 +771,7 @@ function App() {
           <AuthDiagnostics />
         </>
       )}
-    </div>
+    </>
   );
 }
 
