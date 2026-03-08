@@ -762,7 +762,6 @@ function App() {
         </div>
       </footer>
     </div>
-
  {process.env.NODE_ENV === 'development' && (
   <>
     <MemoryDiagnostics />
