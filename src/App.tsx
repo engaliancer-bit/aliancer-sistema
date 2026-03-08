@@ -763,22 +763,14 @@ function App() {
       </footer>
     </div>
 
-    {/* Diagnóstico de Memory Leaks - Apenas em desenvolvimento */}
-    {process.env.NODE_ENV === 'development' && <MemoryDiagnostics />}
-
-    {/* Monitor de Performance de Queries - Apenas em desenvolvimento */}
+ {process.env.NODE_ENV === 'development' && (
+  <>
+    <MemoryDiagnostics />
     <QueryPerformanceMonitor />
-
-    {/* Monitor de Conexões Supabase - Apenas em desenvolvimento */}
     <SupabaseConnectionMonitor />
-
-    {/* Monitor de Memory Leak em Tempo Real - Apenas em desenvolvimento */}
     <MemoryLeakMonitor />
-
-    {/* Diagnóstico de Autenticação - Apenas em desenvolvimento */}
     <AuthDiagnostics />
-    </>
-  );
-}
+  </>
+)}
 
 export default App;
