@@ -268,8 +268,20 @@ export function useQueryCache<T>(
     retryDelay,
   ]);
 
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    fetchData(refetchOnMount);
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      fetchData(refetchOnMount);
+    }, 300);
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
   }, [queryKey, enabled]);
 
   useEffect(() => {
