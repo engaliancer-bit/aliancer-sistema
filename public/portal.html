@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0A7EC2">
+    <title>Portal do Cliente - Carregando...</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #0A7EC2 0%, #0D5B8F 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 24px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+        }
+
+        .spinner {
+            width: 60px;
+            height: 60px;
+            margin: 0 auto 24px;
+            border: 4px solid rgba(255, 255, 255, 0.2);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            letter-spacing: -0.5px;
+        }
+
+        .status {
+            font-size: 16px;
+            opacity: 0.95;
+            line-height: 1.6;
+            margin-bottom: 8px;
+        }
+
+        .substatus {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+
+        .error-box {
+            background-color: rgba(239, 68, 68, 0.15);
+            border: 2px solid rgba(239, 68, 68, 0.4);
+            padding: 20px;
+            border-radius: 12px;
+            margin-top: 24px;
+            animation: shake 0.5s ease-in-out;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+
+        .error-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+
+        .error-message {
+            font-size: 14px;
+            opacity: 0.9;
+            line-height: 1.5;
+        }
+
+        .success-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            animation: scaleIn 0.5s ease-out;
+        }
+
+        @keyframes scaleIn {
+            from { transform: scale(0); }
+            to { transform: scale(1); }
+        }
+
+        @media (max-width: 480px) {
+            h1 { font-size: 24px; }
+            .status { font-size: 15px; }
+            .substatus { font-size: 13px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner" id="spinner"></div>
+        <h1>Portal do Cliente</h1>
+        <p class="status" id="status">Carregando seu acesso...</p>
+        <p class="substatus" id="substatus">Aguarde um momento</p>
+        <div id="error-container"></div>
+    </div>
+
+    <script>
+        // Strict mode
+        'use strict';
+
+        // Global state
+        const state = {
+            token: null,
+            redirectUrl: null,
+            attempts: 0,
+            maxAttempts: 3
+        };
+
+        // Utility functions
+        function log(level, ...args) {
+            const emoji = {
+                info: '🔵',
+                success: '✅',
+                warning: '⚠️',
+                error: '❌'
+            }[level] || '📝';
+
+            console.log(emoji, ...args);
+        }
+
+        function updateStatus(main, sub) {
+            const statusEl = document.getElementById('status');
+            const substatusEl = document.getElementById('substatus');
+
+            if (statusEl) statusEl.textContent = main;
+            if (substatusEl) substatusEl.textContent = sub || '';
+        }
+
+        function showError(title, message) {
+            log('error', title, message);
+
+            const spinner = document.getElementById('spinner');
+            if (spinner) spinner.style.display = 'none';
+
+            updateStatus('Ocorreu um problema', '');
+
+            const errorContainer = document.getElementById('error-container');
+            if (errorContainer) {
+                errorContainer.innerHTML =
+                    '<div class="error-box">' +
+                    '<div class="error-title">' + title + '</div>' +
+                    '<div class="error-message">' + message + '</div>' +
+                    '</div>';
+            }
+        }
+
+        function showSuccess() {
+            const spinner = document.getElementById('spinner');
+            if (spinner) {
+                spinner.outerHTML = '<div class="success-icon">✓</div>';
+            }
+
+            updateStatus('Sucesso!', 'Abrindo portal...');
+        }
+
+        function extractToken() {
+            try {
+                // Try URL search params
+                const urlParams = new URLSearchParams(window.location.search);
+                const tokenFromUrl = urlParams.get('token');
+
+                if (tokenFromUrl && tokenFromUrl.trim()) {
+                    log('success', 'Token encontrado na URL');
+                    return tokenFromUrl.trim();
+                }
+
+                // Try hash params (backup)
+                if (window.location.hash) {
+                    const hashParams = new URLSearchParams(window.location.hash.substring(1));
+                    const tokenFromHash = hashParams.get('token');
+
+                    if (tokenFromHash && tokenFromHash.trim()) {
+                        log('success', 'Token encontrado no hash');
+                        return tokenFromHash.trim();
+                    }
+                }
+
+                log('error', 'Nenhum token encontrado');
+                return null;
+            } catch (error) {
+                log('error', 'Erro ao extrair token:', error);
+                return null;
+            }
+        }
+
+        function saveToken(token) {
+            try {
+                localStorage.setItem('client_portal_token', token);
+                log('success', 'Token salvo no localStorage');
+                return true;
+            } catch (error) {
+                log('warning', 'Não foi possível salvar token:', error);
+                return false;
+            }
+        }
+
+        function buildRedirectUrl(token) {
+            try {
+                const baseUrl = window.location.origin;
+                const url = baseUrl + '/?portal=' + encodeURIComponent(token);
+                log('info', 'URL de redirecionamento:', url);
+                return url;
+            } catch (error) {
+                log('error', 'Erro ao construir URL:', error);
+                return null;
+            }
+        }
+
+        function performRedirect(url, delay) {
+            delay = delay || 500;
+
+            log('info', 'Redirecionando em ' + delay + 'ms...');
+
+            setTimeout(function() {
+                try {
+                    showSuccess();
+
+                    setTimeout(function() {
+                        log('info', 'Executando redirecionamento...');
+                        window.location.replace(url);
+                    }, 300);
+
+                } catch (error) {
+                    log('error', 'Erro no redirecionamento:', error);
+
+                    // Fallback: try href
+                    try {
+                        window.location.href = url;
+                    } catch (e) {
+                        showError(
+                            'Erro ao Redirecionar',
+                            'Não foi possível redirecionar automaticamente. Por favor, feche e abra o link novamente.'
+                        );
+                    }
+                }
+            }, delay);
+        }
+
+        function handleError(errorType) {
+            switch (errorType) {
+                case 'NO_TOKEN':
+                    showError(
+                        'Link Inválido',
+                        'Este link não contém as informações necessárias. Por favor, use o link completo enviado pelo WhatsApp.'
+                    );
+                    setTimeout(function() {
+                        window.location.href = '/';
+                    }, 4000);
+                    break;
+
+                case 'INVALID_TOKEN':
+                    showError(
+                        'Token Inválido',
+                        'O código de acesso não é válido. Por favor, solicite um novo link.'
+                    );
+                    setTimeout(function() {
+                        window.location.href = '/';
+                    }, 4000);
+                    break;
+
+                case 'REDIRECT_FAILED':
+                    showError(
+                        'Erro no Redirecionamento',
+                        'Não foi possível abrir o portal. Por favor, tente novamente ou entre em contato.'
+                    );
+                    break;
+
+                default:
+                    showError(
+                        'Erro Desconhecido',
+                        'Ocorreu um erro inesperado. Por favor, tente novamente.'
+                    );
+                    setTimeout(function() {
+                        window.location.href = '/';
+                    }, 4000);
+            }
+        }
+
+        // Main initialization function
+        function initialize() {
+            try {
+                log('info', '='.repeat(50));
+                log('info', 'PORTAL DO CLIENTE - INICIALIZAÇÃO');
+                log('info', '='.repeat(50));
+                log('info', 'URL completa:', window.location.href);
+                log('info', 'Search params:', window.location.search);
+                log('info', 'User Agent:', navigator.userAgent);
+                log('info', 'Navegador:', navigator.vendor || 'Unknown');
+                log('info', '='.repeat(50));
+
+                // Update status
+                updateStatus('Verificando acesso...', 'Processando link');
+
+                // Step 1: Extract token
+                state.token = extractToken();
+
+                if (!state.token) {
+                    handleError('NO_TOKEN');
+                    return;
+                }
+
+                // Basic validation
+                if (state.token.length < 10) {
+                    log('error', 'Token muito curto:', state.token.length, 'caracteres');
+                    handleError('INVALID_TOKEN');
+                    return;
+                }
+
+                log('success', 'Token válido detectado');
+                updateStatus('Validando acesso...', 'Token encontrado');
+
+                // Step 2: Save token
+                saveToken(state.token);
+
+                // Step 3: Build redirect URL
+                state.redirectUrl = buildRedirectUrl(state.token);
+
+                if (!state.redirectUrl) {
+                    handleError('REDIRECT_FAILED');
+                    return;
+                }
+
+                // Step 4: Perform redirect
+                updateStatus('Preparando portal...', 'Quase lá');
+                performRedirect(state.redirectUrl, 800);
+
+            } catch (error) {
+                log('error', 'Erro crítico na inicialização:', error);
+                showError(
+                    'Erro Crítico',
+                    'Não foi possível processar o link: ' + error.message
+                );
+            }
+        }
+
+        // Safety timeout - prevent getting stuck
+        setTimeout(function() {
+            if (window.location.href.indexOf('portal.html') !== -1) {
+                log('warning', 'Timeout alcançado - página ainda em portal.html');
+
+                if (state.redirectUrl) {
+                    log('info', 'Tentando redirecionamento de emergência...');
+                    updateStatus('Redirecionando novamente...', 'Por favor aguarde');
+
+                    setTimeout(function() {
+                        window.location.href = state.redirectUrl;
+                    }, 1000);
+                } else {
+                    showError(
+                        'Timeout',
+                        'O redirecionamento está demorando muito. Por favor, tente abrir o link novamente.'
+                    );
+                }
+            }
+        }, 10000);
+
+        // Start when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initialize);
+        } else {
+            initialize();
+        }
+
+        // Handle page visibility changes (mobile)
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden && window.location.href.indexOf('portal.html') !== -1) {
+                log('info', 'Página voltou ao foco - verificando estado');
+
+                if (state.redirectUrl && state.attempts < state.maxAttempts) {
+                    state.attempts++;
+                    log('info', 'Tentativa de redirecionamento:', state.attempts);
+                    performRedirect(state.redirectUrl, 0);
+                }
+            }
+        });
+
+        log('info', 'Script do portal carregado e pronto');
+    </script>
+</body>
+</html>

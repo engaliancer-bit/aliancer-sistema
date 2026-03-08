@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+    <!-- Preconnect apenas para Supabase (crítico) -->
+    <link rel="dns-prefetch" href="https://mckvvqddxwzwkpvcutmy.supabase.co" />
+    <link rel="preconnect" href="https://mckvvqddxwzwkpvcutmy.supabase.co" crossorigin />
+
+    <!-- Force rotation support for Android and iOS -->
+    <meta name="screen-orientation" content="any" />
+    <meta name="x5-orientation" content="any" />
+    <meta name="x5-fullscreen" content="false" />
+
+    <style>
+      @supports (-webkit-touch-callout: none) {
+        html, body {
+          position: relative !important;
+          overflow: auto !important;
+        }
+      }
+    </style>
+
+    <title>Sistema Aliancer - Gestão Empresarial</title>
+    <meta name="description" content="Sistema Integrado de Gestão Empresarial - Indústria, Engenharia e Construção" />
+
+    <meta name="theme-color" content="#0A7EC2" />
+    <meta name="apple-mobile-web-app-title" content="Aliancer ERP" />
+
+    <link rel="manifest" href="/manifest.json" />
+
+    <meta property="og:title" content="Sistema Aliancer - Gestão Empresarial" />
+    <meta property="og:description" content="Sistema Integrado de Gestão Empresarial - Indústria, Engenharia e Construção" />
+    <meta property="og:type" content="website" />
+
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Sistema Aliancer - Gestão Empresarial" />
+    <meta name="twitter:description" content="Sistema Integrado de Gestão Empresarial" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function() {
+        'use strict';
+
+        function forceUnlockOrientation() {
+          if (screen.orientation) {
+            try {
+              screen.orientation.unlock();
+            } catch (e) {}
+          }
+
+          const viewportMeta = document.querySelector('meta[name="viewport"]');
+          if (viewportMeta) {
+            viewportMeta.setAttribute('content',
+              'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=5.0, user-scalable=yes');
+          }
+
+          const style = document.createElement('style');
+          style.textContent = `
+            html, body {
+              width: 100vw !important;
+              height: 100vh !important;
+              overflow: auto !important;
+              position: relative !important;
+            }
+
+            #root {
+              width: 100% !important;
+              height: 100% !important;
+              min-height: 100vh !important;
+            }
+
+            @media (orientation: landscape) {
+              body { width: 100vw !important; height: 100vh !important; }
+            }
+
+            @media (orientation: portrait) {
+              body { width: 100vw !important; height: 100vh !important; }
+            }
+          `;
+          document.head.appendChild(style);
+        }
+
+        function handleOrientationChange() {
+          const root = document.getElementById('root');
+          if (root) {
+            root.style.width = '100vw';
+            root.style.height = '100vh';
+            root.style.minHeight = window.innerHeight + 'px';
+          }
+
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+          setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
+        }
+
+        forceUnlockOrientation();
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', forceUnlockOrientation);
+        }
+
+        if (screen.orientation) {
+          screen.orientation.addEventListener('change', handleOrientationChange);
+        }
+
+        window.addEventListener('orientationchange', handleOrientationChange);
+        window.addEventListener('resize', handleOrientationChange);
+
+        if (window.matchMedia('(display-mode: standalone)').matches) {
+          setInterval(() => {
+            const root = document.getElementById('root');
+            if (root) {
+              root.style.width = window.innerWidth + 'px';
+              root.style.height = window.innerHeight + 'px';
+            }
+          }, 500);
+        }
+
+        setTimeout(handleOrientationChange, 100);
+        setTimeout(handleOrientationChange, 500);
+        setTimeout(handleOrientationChange, 1000);
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,84 @@
+{
+  "name": "Sistema Aliancer - Gestão Empresarial",
+  "short_name": "Aliancer ERP",
+  "description": "Sistema Integrado de Gestão Empresarial - Indústria, Engenharia e Construção",
+  "start_url": "/?v=6",
+  "display": "standalone",
+  "background_color": "#0A7EC2",
+  "theme_color": "#0A7EC2",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/aliancer_logo_6cm-01-01.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/aliancer_logo_6cm-01-01.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/produtos.jpg",
+      "sizes": "540x720",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "/relatorios.jpg",
+      "sizes": "540x720",
+      "type": "image/jpeg"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Indústria",
+      "short_name": "Fábrica",
+      "description": "Gestão da Indústria de Pré-Moldados",
+      "url": "/?module=factory",
+      "icons": [
+        {
+          "src": "/produtos.jpg",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Engenharia",
+      "short_name": "Projetos",
+      "description": "Escritório de Engenharia e Topografia",
+      "url": "/?module=engineering",
+      "icons": [
+        {
+          "src": "/projeto_de_topografia_e_eng.jpg",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Construtora",
+      "short_name": "Obras",
+      "description": "Gestão de Obras e Construção",
+      "url": "/?module=construction",
+      "icons": [
+        {
+          "src": "/ordem_de_producao.jpg",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
