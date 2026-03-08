@@ -208,8 +208,13 @@ function App() {
   });
 
   const hasLoadedStats = useRef(false);
+  const statsLastFetchedRef = useRef<{ orders: number; deliveries: number }>({ orders: 0, deliveries: 0 });
+  const STATS_CACHE_TTL = 10 * 60 * 1000;
 
   const loadProductionOrdersStats = useCallback(async () => {
+    const now = Date.now();
+    if (now - statsLastFetchedRef.current.orders < STATS_CACHE_TTL) return;
+
     try {
       const { data: orders, error } = await supabase
         .from('production_orders')
@@ -217,6 +222,8 @@ function App() {
         .in('status', ['open', 'in_progress']);
 
       if (error) throw error;
+
+      statsLastFetchedRef.current.orders = Date.now();
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -238,6 +245,9 @@ function App() {
 
 
   const loadDeliveriesStats = useCallback(async () => {
+    const now = Date.now();
+    if (now - statsLastFetchedRef.current.deliveries < STATS_CACHE_TTL) return;
+
     try {
       const { data: deliveries, error } = await supabase
         .from('deliveries')
@@ -246,6 +256,7 @@ function App() {
 
       if (error) throw error;
 
+      statsLastFetchedRef.current.deliveries = Date.now();
       setDeliveriesOpen(deliveries?.length || 0);
     } catch (error) {
       console.error('Erro ao carregar estatísticas das entregas:', error);
@@ -338,7 +349,7 @@ function App() {
     <>
     <PWAInstallPrompt />
     <PWAStatus />
-    <CriticalPerformanceMonitor />
+    {process.env.NODE_ENV === 'development' && <CriticalPerformanceMonitor />}
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <header className="bg-gradient-to-r from-[#0A7EC2] to-[#0968A8] shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
