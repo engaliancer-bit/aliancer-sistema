@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 
@@ -17,9 +17,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const subscriptionRef = useRef<{ unsubscribe: () => void } | null>(null);
 
   useEffect(() => {
     let mounted = true;
+
+    if (subscriptionRef.current) {
+      subscriptionRef.current.unsubscribe();
+      subscriptionRef.current = null;
+    }
 
     const initializeAuth = async () => {
       try {
@@ -49,7 +55,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     initializeAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, currentSession) => {
+      (event, currentSession) => {
+        if (!mounted) return;
+
         if (import.meta.env.DEV) {
           console.log('[AuthContext] Auth state changed:', {
             event,
@@ -59,11 +67,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           });
         }
 
-        if (mounted) {
-          setSession(currentSession);
-          setUser(currentSession?.user ?? null);
-          setLoading(false);
-        }
+        setSession(currentSession);
+        setUser(currentSession?.user ?? null);
+        setLoading(false);
 
         if (event === 'SIGNED_IN') {
           if (import.meta.env.DEV) {
@@ -75,10 +81,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (import.meta.env.DEV) {
             console.log('[AuthContext] User signed out');
           }
-          if (mounted) {
-            setSession(null);
-            setUser(null);
-          }
+          setSession(null);
+          setUser(null);
         }
 
         if (event === 'TOKEN_REFRESHED') {
@@ -89,9 +93,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     );
 
+    subscriptionRef.current = subscription;
+
     return () => {
       mounted = false;
       subscription.unsubscribe();
+      subscriptionRef.current = null;
     };
   }, []);
 
