@@ -34,18 +34,14 @@ export function AppCacheProvider({ children }: { children: React.ReactNode }) {
 
   const getCache = useCallback(<T,>(key: string): CachedData<T> => {
     const cached = cacheRef.current.get(key);
-
     if (!cached) {
       return { data: null, timestamp: 0, loading: false };
     }
-
     const isExpired = Date.now() - cached.timestamp > CACHE_DURATION;
-
     if (isExpired) {
       cacheRef.current.delete(key);
       return { data: null, timestamp: 0, loading: false };
     }
-
     return cached;
   }, []);
 
@@ -87,13 +83,11 @@ export function AppCacheProvider({ children }: { children: React.ReactNode }) {
     const interval = setInterval(() => {
       const now = Date.now();
       const keysToDelete: string[] = [];
-
       cacheRef.current.forEach((value, key) => {
         if (now - value.timestamp > MAX_AGE) {
           keysToDelete.push(key);
         }
       });
-
       keysToDelete.forEach(key => cacheRef.current.delete(key));
     }, 120000);
 
