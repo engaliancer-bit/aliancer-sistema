@@ -1,13 +1,13 @@
-import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useRef, useCallback, useEffect, useMemo } from 'react';
 
-interface CachedData<T> {
-  data: T | null;
+interface CacheEntry<T = unknown> {
+  data: T;
   timestamp: number;
   loading: boolean;
 }
 
 interface AppCacheContextType {
-  getCache: <T>(key: string) => CachedData<T>;
+  getCache: <T>(key: string) => { data: T | null; timestamp: number; loading: boolean };
   setCache: <T>(key: string, data: T) => void;
   clearCache: (key?: string) => void;
   clearAllCache: () => void;
@@ -17,91 +17,72 @@ interface AppCacheContextType {
 
 const AppCacheContext = createContext<AppCacheContextType | undefined>(undefined);
 
-const CACHE_DURATION = 5 * 60 * 1000;
-const MAX_AGE = 30 * 60 * 1000;
 const MAX_ENTRIES = 100;
-const EVICT_COUNT = 20;
+const MAX_AGE_MS = 30 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
 
 export function AppCacheProvider({ children }: { children: React.ReactNode }) {
-  }
-  const cacheRef = useRef<Map<string, CachedData<any>>>(new Map());
+  const store = useRef<Map<string, CacheEntry>>(new Map());
 
   const evictOldest = useCallback(() => {
-    const entries = Array.from(cacheRef.current.entries())
-      .sort((a, b) => a[1].timestamp - b[1].timestamp);
-    entries.slice(0, EVICT_COUNT).forEach(([key]) => cacheRef.current.delete(key));
+    const sorted = Array.from(store.current.entries()).sort(
+      (a, b) => a[1].timestamp - b[1].timestamp
+    );
+    sorted.slice(0, 20).forEach(([k]) => store.current.delete(k));
   }, []);
 
-  const getCache = useCallback(<T,>(key: string): CachedData<T> => {
-    const cached = cacheRef.current.get(key);
-    if (!cached) {
-      return { data: null, timestamp: 0, loading: false };
+  const getCache = useCallback(<T,>(key: string) => {
+    const entry = store.current.get(key);
+    if (!entry) return { data: null as T | null, timestamp: 0, loading: false };
+    if (Date.now() - entry.timestamp > MAX_AGE_MS) {
+      store.current.delete(key);
+      return { data: null as T | null, timestamp: 0, loading: false };
     }
-    const isExpired = Date.now() - cached.timestamp > CACHE_DURATION;
-    if (isExpired) {
-      cacheRef.current.delete(key);
-      return { data: null, timestamp: 0, loading: false };
-    }
-    return cached;
+    return { data: entry.data as T, timestamp: entry.timestamp, loading: entry.loading };
   }, []);
 
   const setCache = useCallback(<T,>(key: string, data: T) => {
-    if (cacheRef.current.size >= MAX_ENTRIES) {
-      evictOldest();
-    }
-    cacheRef.current.set(key, {
-      data,
-      timestamp: Date.now(),
-      loading: false,
-    });
+    if (store.current.size >= MAX_ENTRIES) evictOldest();
+    store.current.set(key, { data, timestamp: Date.now(), loading: false });
   }, [evictOldest]);
 
-  const setLoading = useCallback((key: string, loading: boolean) => {
-    const existing = cacheRef.current.get(key);
-    cacheRef.current.set(key, {
-      data: existing?.data || null,
-      timestamp: existing?.timestamp || Date.now(),
-      loading,
-    });
-  }, []);
-
   const clearCache = useCallback((key?: string) => {
-    if (key) {
-      cacheRef.current.delete(key);
+    if (key !== undefined) {
+      store.current.delete(key);
     }
   }, []);
 
   const clearAllCache = useCallback(() => {
-    cacheRef.current.clear();
+    store.current.clear();
   }, []);
 
-  const isLoading = useCallback((key: string): boolean => {
-    return cacheRef.current.get(key)?.loading || false;
+  const isLoading = useCallback((key: string) => {
+    return store.current.get(key)?.loading ?? false;
+  }, []);
+
+  const setLoading = useCallback((key: string, loading: boolean) => {
+    const existing = store.current.get(key);
+    store.current.set(key, {
+      data: existing?.data ?? null,
+      timestamp: existing?.timestamp ?? Date.now(),
+      loading,
+    });
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const id = setInterval(() => {
       const now = Date.now();
-      const keysToDelete: string[] = [];
-      cacheRef.current.forEach((value, key) => {
-        if (now - value.timestamp > MAX_AGE) {
-          keysToDelete.push(key);
-        }
+      store.current.forEach((entry, key) => {
+        if (now - entry.timestamp > MAX_AGE_MS) store.current.delete(key);
       });
-      keysToDelete.forEach(key => cacheRef.current.delete(key));
-    }, 120000);
-
-    return () => clearInterval(interval);
+    }, CLEANUP_INTERVAL_MS);
+    return () => clearInterval(id);
   }, []);
 
-  const value = useMemo<AppCacheContextType>(() => ({
-    getCache,
-    setCache,
-    clearCache,
-    clearAllCache,
-    isLoading,
-    setLoading,
-  }), [getCache, setCache, clearCache, clearAllCache, isLoading, setLoading]);
+  const value = useMemo<AppCacheContextType>(
+    () => ({ getCache, setCache, clearCache, clearAllCache, isLoading, setLoading }),
+    [getCache, setCache, clearCache, clearAllCache, isLoading, setLoading]
+  );
 
   return (
     <AppCacheContext.Provider value={value}>
@@ -110,12 +91,8 @@ export function AppCacheProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function useAppCache() {
-  }
-  )
-  const context = useContext(AppCacheContext);
-  if (!context) {
-    throw new Error('useAppCache must be used within AppCacheProvider');
-  }
-  return context;
+export function useAppCache(): AppCacheContextType {
+  const ctx = useContext(AppCacheContext);
+  if (!ctx) throw new Error('useAppCache must be used within AppCacheProvider');
+  return ctx;
 }
