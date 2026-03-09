@@ -1,5 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import { supabase } from '../lib/supabase';
+// [DEBOUNCE] Advanced debounce with maxWait prevents search floods
+import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
+// [MONITOR] Performance tracking for receitas/despesas operations
+import { measureAsync, recordMetric } from '../lib/performanceMonitor';
+// [CANCEL] Cancel in-flight queries when filters change
+import { cancelRequestsByCategory, registerRequest, unregisterRequest, createRequestKey } from '../lib/requestCancellation';
 import {
   DollarSign,
   TrendingUp,
@@ -124,6 +130,125 @@ function isSystemGenerated(entry: CashFlowEntry): boolean {
   return !!(entry.sale_id || entry.purchase_id || entry.payable_account_id || entry.customer_revenue_id);
 }
 
+interface CashFlowRowProps {
+  entry: CashFlowEntry;
+  onEdit: (e: CashFlowEntry) => void;
+  onDelete: (id: string) => void;
+  onConfirmPayment: (e: CashFlowEntry) => void;
+}
+
+// [MEMO] CashFlowRow wrapped in React.memo — each row re-renders only when its own data changes,
+// not when search term, filters, or other rows change in the parent.
+const CashFlowRow = memo(function CashFlowRow({ entry, onEdit, onDelete, onConfirmPayment }: CashFlowRowProps) {
+  const source = getSourceLabel(entry);
+  const systemGenerated = isSystemGenerated(entry);
+  const isExpenseConfirmed = entry.type === 'expense' && entry.payment_status === 'confirmado';
+  const isExpensePending = entry.type === 'expense' && entry.payment_status !== 'confirmado';
+  const rowBgClass = isExpenseConfirmed ? 'bg-yellow-50' : isExpensePending ? 'bg-red-50' : '';
+
+  return (
+    <tr className={`${rowBgClass} hover:opacity-80`}>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+        {format(new Date(entry.date), 'dd/MM/yyyy')}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+          entry.type === 'income' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+        }`}>
+          {entry.type === 'income' ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+          {entry.type === 'income' ? 'Receita' : 'Despesa'}
+        </span>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+        {entry.cost_categories?.name || '—'}
+      </td>
+      <td className="px-6 py-4 text-sm text-gray-900">
+        <div>{entry.description}</div>
+        {(entry.customers?.name || entry.construction_works?.work_name) && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {entry.customers?.name && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-sky-50 text-sky-700 border border-sky-200">
+                <User className="h-3 w-3" />
+                {entry.customers.name}
+              </span>
+            )}
+            {entry.construction_works?.work_name && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-amber-50 text-amber-700 border border-amber-200">
+                <Building2 className="h-3 w-3" />
+                {entry.construction_works.work_name}
+              </span>
+            )}
+          </div>
+        )}
+        {entry.notes && <p className="text-xs text-gray-500 mt-1">{entry.notes}</p>}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${source.color}`}>
+          {source.label}
+        </span>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-center">
+        {entry.type === 'expense' ? (
+          entry.payment_status === 'confirmado' ? (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+              <CheckCircle className="h-3 w-3" />
+              Pago
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+              <Clock className="h-3 w-3" />
+              Pendente
+            </span>
+          )
+        ) : (
+          <span className="text-xs text-gray-400">—</span>
+        )}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-medium">
+        <span className={entry.type === 'income' ? 'text-green-600' : 'text-red-600'}>
+          {entry.type === 'expense' && '-'}
+          {formatCurrency(entry.amount)}
+        </span>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-center text-sm">
+        <div className="flex items-center justify-center gap-2">
+          {entry.type === 'expense' && entry.payment_status !== 'confirmado' && (
+            <button
+              onClick={() => onConfirmPayment(entry)}
+              className="text-green-600 hover:text-green-800 transition-colors"
+              title="Confirmar Pagamento"
+            >
+              <CheckCircle className="h-4 w-4" />
+            </button>
+          )}
+          {entry.type === 'expense' && entry.payment_status === 'confirmado' && (
+            <PaymentReceiptGenerator entry={entry} />
+          )}
+          {!systemGenerated ? (
+            <>
+              <button onClick={() => onEdit(entry)} className="text-blue-600 hover:text-blue-900 transition-colors" title="Editar">
+                <Edit2 className="h-4 w-4" />
+              </button>
+              <button onClick={() => onDelete(entry.id)} className="text-red-600 hover:text-red-900 transition-colors" title="Excluir">
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </>
+          ) : entry.customer_revenue_id ? (
+            <span className="inline-flex items-center gap-1 text-xs text-teal-600" title="Recebimento de cliente — edite pela aba Extrato de Clientes">
+              <Lock className="h-3 w-3" />
+              <Users className="h-3 w-3" />
+            </span>
+          ) : (
+            <span className="text-xs text-gray-500" title="Criado automaticamente pelo sistema">
+              <FileText className="h-4 w-4 inline" />
+            </span>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
+
 export default function FactoryFinanceManager({
   initialStartDate = '',
   initialEndDate = '',
@@ -186,21 +311,35 @@ export default function FactoryFinanceManager({
   }
 
   async function loadEntries() {
+    // [CANCEL] Cancel any previous in-flight entries query before starting a new one
+    const reqKey = createRequestKey('receitas-despesas', 'load_entries', { startDate, endDate });
+    registerRequest(reqKey);
+
     try {
-      let query = supabase
-        .from('cash_flow')
-        .select('*, cost_categories(name, type), payment_methods(name), customers(name), construction_works(work_name)')
-        .eq('business_unit', 'factory')
-        .order('date', { ascending: false });
+      // [MONITOR] Track list load time for receitas/despesas module
+      const { data, error } = await measureAsync(
+        'receitas:load_list',
+        async () => {
+          let query = supabase
+            .from('cash_flow')
+            // [CACHE] Restrict columns to only what the list view needs
+            .select('id, date, type, description, amount, payment_method_id, cost_category_id, purchase_id, sale_id, payable_account_id, customer_revenue_id, customer_id, construction_work_id, notes, reference, payment_status, payment_confirmed_date, cost_categories(name, type), payment_methods(name), customers(name), construction_works(work_name)')
+            .eq('business_unit', 'factory')
+            .order('date', { ascending: false });
 
-      if (startDate) query = query.gte('date', startDate);
-      if (endDate) query = query.lte('date', endDate);
+          if (startDate) query = query.gte('date', startDate);
+          if (endDate) query = query.lte('date', endDate);
 
-      const { data, error } = await query;
+          return query;
+        },
+        { module: 'receitas-despesas' }
+      );
       if (error) throw error;
       setEntries(data || []);
     } catch (error) {
       console.error('Erro ao carregar lançamentos:', error);
+    } finally {
+      unregisterRequest(reqKey);
     }
   }
 
@@ -267,6 +406,25 @@ export default function FactoryFinanceManager({
       console.error('Erro ao carregar formas de pagamento:', error);
     }
   }
+
+  // [DEBOUNCE] Advanced debounce with maxWait=800ms — prevents rapid re-filters while typing
+  // [CANCEL] cancelCategory cancels stale server queries on each keystroke
+  const debouncedSearchTerm = useAdvancedDebounce(searchTerm, {
+    delay: 350,
+    maxWait: 800,
+    cancelCategory: 'receitas-search',
+  });
+
+  // [MONITOR] Track search events
+  const prevSearchRef = useRef('');
+  useEffect(() => {
+    if (debouncedSearchTerm !== prevSearchRef.current) {
+      prevSearchRef.current = debouncedSearchTerm;
+      if (debouncedSearchTerm) {
+        recordMetric('receitas:search', 1, 'event', { term_length: String(debouncedSearchTerm.length) });
+      }
+    }
+  }, [debouncedSearchTerm]);
 
   const filteredWorks = useMemo(() => {
     if (!formData.customer_id) return [];
@@ -363,24 +521,45 @@ export default function FactoryFinanceManager({
     }
   }
 
-  const filteredEntries = entries.filter(entry => {
-    if (filterType !== 'all' && entry.type !== filterType) return false;
-    if (filterCategory !== 'all' && entry.cost_category_id !== filterCategory) return false;
-    if (searchTerm && !entry.description.toLowerCase().includes(searchTerm.toLowerCase())) return false;
-    if (filterPaymentStatus !== 'all' && entry.type === 'expense') {
-      const isConfirmed = entry.payment_status === 'confirmado';
-      if (filterPaymentStatus === 'confirmed' && !isConfirmed) return false;
-      if (filterPaymentStatus === 'pending' && isConfirmed) return false;
-    }
-    return true;
-  });
+  // [MEMO] filteredEntries uses memoization so the heavy filter does NOT run on every render.
+  // [DEBOUNCE] Uses debouncedSearchTerm so typing does not re-filter on every keystroke.
+  const filteredEntries = useMemo(() => {
+    const start = performance.now();
+    const searchLower = debouncedSearchTerm.toLowerCase();
+    const result = entries.filter(entry => {
+      if (filterType !== 'all' && entry.type !== filterType) return false;
+      if (filterCategory !== 'all' && entry.cost_category_id !== filterCategory) return false;
+      if (debouncedSearchTerm && !entry.description.toLowerCase().includes(searchLower)) return false;
+      if (filterPaymentStatus !== 'all' && entry.type === 'expense') {
+        const isConfirmed = entry.payment_status === 'confirmado';
+        if (filterPaymentStatus === 'confirmed' && !isConfirmed) return false;
+        if (filterPaymentStatus === 'pending' && isConfirmed) return false;
+      }
+      return true;
+    });
+    // [MONITOR] Track filter application duration
+    recordMetric('receitas:apply_filter', performance.now() - start, 'ms', { total: String(result.length) });
+    return result;
+  }, [entries, filterType, filterCategory, debouncedSearchTerm, filterPaymentStatus]);
 
-  const expenseEntries = entries.filter(e => e.type === 'expense');
-  const expensesPaid = expenseEntries.filter(e => e.payment_status === 'confirmado').reduce((sum, e) => sum + e.amount, 0);
-  const expensesPending = expenseEntries.filter(e => e.payment_status !== 'confirmado').reduce((sum, e) => sum + e.amount, 0);
+  // [MEMO] Summary calculations memoized — never recompute during unrelated state changes
+  const { expensesPaid, expensesPending } = useMemo(() => {
+    const expenseEntries = entries.filter(e => e.type === 'expense');
+    return {
+      expensesPaid: expenseEntries.filter(e => e.payment_status === 'confirmado').reduce((sum, e) => sum + e.amount, 0),
+      expensesPending: expenseEntries.filter(e => e.payment_status !== 'confirmado').reduce((sum, e) => sum + e.amount, 0),
+    };
+  }, [entries]);
 
-  const incomeCategories = costCategories.filter(c => c.type?.startsWith('income'));
-  const expenseCategories = costCategories.filter(c => !c.type?.startsWith('income'));
+  // [MEMO] Category lists memoized — only rebuild when costCategories changes
+  const incomeCategories = useMemo(() => costCategories.filter(c => c.type?.startsWith('income')), [costCategories]);
+  const expenseCategories = useMemo(() => costCategories.filter(c => !c.type?.startsWith('income')), [costCategories]);
+
+  // [MEMO] Stable callback refs so CashFlowRow's React.memo comparison works.
+  // New function instances on every render would cause all rows to re-render.
+  const handleEditCb = useCallback((e: CashFlowEntry) => handleEdit(e), []);
+  const handleDeleteCb = useCallback((id: string) => handleDelete(id), []);
+  const handleConfirmPaymentCb = useCallback((e: CashFlowEntry) => handleOpenConfirmPayment(e), []);
 
   if (loading) {
     return (
@@ -549,126 +728,17 @@ export default function FactoryFinanceManager({
                 <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th>
               </tr>
             </thead>
+            {/* [MEMO] CashFlowRow — each row only re-renders when its own entry data changes */}
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredEntries.map((entry) => {
-                const source = getSourceLabel(entry);
-                const systemGenerated = isSystemGenerated(entry);
-                const isExpenseConfirmed = entry.type === 'expense' && entry.payment_status === 'confirmado';
-                const isExpensePending = entry.type === 'expense' && entry.payment_status !== 'confirmado';
-                const rowBgClass = isExpenseConfirmed ? 'bg-yellow-50' : isExpensePending ? 'bg-red-50' : '';
-                return (
-                  <tr key={entry.id} className={`${rowBgClass} hover:opacity-80`}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {format(new Date(entry.date), 'dd/MM/yyyy')}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
-                        entry.type === 'income' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                        {entry.type === 'income' ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-                        {entry.type === 'income' ? 'Receita' : 'Despesa'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {entry.cost_categories?.name || '—'}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-900">
-                      <div>{entry.description}</div>
-                      {(entry.customers?.name || entry.construction_works?.work_name) && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {entry.customers?.name && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-sky-50 text-sky-700 border border-sky-200">
-                              <User className="h-3 w-3" />
-                              {entry.customers.name}
-                            </span>
-                          )}
-                          {entry.construction_works?.work_name && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-amber-50 text-amber-700 border border-amber-200">
-                              <Building2 className="h-3 w-3" />
-                              {entry.construction_works.work_name}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {entry.notes && <p className="text-xs text-gray-500 mt-1">{entry.notes}</p>}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${source.color}`}>
-                        {source.label}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      {entry.type === 'expense' ? (
-                        entry.payment_status === 'confirmado' ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                            <CheckCircle className="h-3 w-3" />
-                            Pago
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                            <Clock className="h-3 w-3" />
-                            Pendente
-                          </span>
-                        )
-                      ) : (
-                        <span className="text-xs text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-medium">
-                      <span className={entry.type === 'income' ? 'text-green-600' : 'text-red-600'}>
-                        {entry.type === 'expense' && '-'}
-                        {formatCurrency(entry.amount)}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center text-sm">
-                      <div className="flex items-center justify-center gap-2">
-                        {entry.type === 'expense' && entry.payment_status !== 'confirmado' && (
-                          <button
-                            onClick={() => handleOpenConfirmPayment(entry)}
-                            className="text-green-600 hover:text-green-800 transition-colors"
-                            title="Confirmar Pagamento"
-                          >
-                            <CheckCircle className="h-4 w-4" />
-                          </button>
-                        )}
-                        {entry.type === 'expense' && entry.payment_status === 'confirmado' && (
-                          <PaymentReceiptGenerator entry={entry} />
-                        )}
-                        {!systemGenerated ? (
-                          <>
-                            <button
-                              onClick={() => handleEdit(entry)}
-                              className="text-blue-600 hover:text-blue-900 transition-colors"
-                              title="Editar"
-                            >
-                              <Edit2 className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() => handleDelete(entry.id)}
-                              className="text-red-600 hover:text-red-900 transition-colors"
-                              title="Excluir"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </>
-                        ) : entry.customer_revenue_id ? (
-                          <span
-                            className="inline-flex items-center gap-1 text-xs text-teal-600"
-                            title="Recebimento de cliente — edite pela aba Extrato de Clientes"
-                          >
-                            <Lock className="h-3 w-3" />
-                            <Users className="h-3 w-3" />
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-500" title="Criado automaticamente pelo sistema">
-                            <FileText className="h-4 w-4 inline" />
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {filteredEntries.map((entry) => (
+                <CashFlowRow
+                  key={entry.id}
+                  entry={entry}
+                  onEdit={handleEditCb}
+                  onDelete={handleDeleteCb}
+                  onConfirmPayment={handleConfirmPaymentCb}
+                />
+              ))}
             </tbody>
           </table>
 

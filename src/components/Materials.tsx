@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { Plus, Edit2, Trash2, Droplet, Save, Check, Upload, AlertCircle, Search, FileDown, Users, Eye, ShoppingCart, Calendar, ChevronLeft, ChevronRight, Lock, Unlock, Clock, ShieldAlert } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import jsPDF from 'jspdf';
@@ -7,8 +7,13 @@ import MaterialSuppliersManager from './MaterialSuppliersManager';
 import XMLImporter from './XMLImporter';
 import InvoicePurchaseModal, { type InvoicePurchaseData } from './InvoicePurchaseModal';
 import { usePagination } from '../hooks/usePagination';
-import { useDebounce } from '../hooks/useDebounce';
 import { useAbortController } from '../hooks/useAbortController';
+// [DEBOUNCE] useAdvancedDebounce replaces simple useDebounce — provides maxWait guard
+import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
+// [MONITOR] Performance tracking for key list operations
+import { measureAsync, recordMetric } from '../lib/performanceMonitor';
+// [CANCEL] Request cancellation on search/filter changes
+import { cancelRequestsByCategory } from '../lib/requestCancellation';
 
 interface Supplier {
   id: string;
@@ -55,6 +60,131 @@ interface PriceHistory {
   notes: string | null;
   changed_at: string;
 }
+
+interface MaterialRowProps {
+  material: Material;
+  onEdit: (m: Material) => void;
+  onDelete: (id: string) => void;
+  onOpenPurchase: (m: Material) => void;
+  onLoadStock: (m: Material) => void;
+  onOpenPriceHistory: (m: Material) => void;
+  onToggleLock: (m: Material) => void;
+  onManageSuppliers: (m: Material) => void;
+}
+
+// [MEMO] MaterialRow wrapped in React.memo — individual rows never re-render unless
+// their own data changes, even when parent state (search term, filters) is updated.
+const MaterialRow = memo(function MaterialRow({
+  material,
+  onEdit,
+  onDelete,
+  onOpenPurchase,
+  onLoadStock,
+  onOpenPriceHistory,
+  onToggleLock,
+  onManageSuppliers,
+}: MaterialRowProps) {
+  const salePrice = material.resale_enabled
+    ? material.unit_cost +
+      (material.unit_cost * material.resale_tax_percentage / 100) +
+      (material.unit_cost * material.resale_margin_percentage / 100)
+    : 0;
+
+  return (
+    <tr
+      className={`hover:bg-gray-50 ${material.import_status === 'imported_pending' ? 'bg-yellow-50 border-l-4 border-yellow-400' : ''}`}
+    >
+      <td className="px-6 py-4 whitespace-nowrap text-left text-sm font-medium">
+        <div className="flex items-center gap-2">
+          <button onClick={() => onOpenPurchase(material)} className="text-green-600 hover:text-green-900" title="Registrar compra">
+            <ShoppingCart className="w-4 h-4 inline" />
+          </button>
+          <button onClick={() => onLoadStock(material)} className="text-blue-600 hover:text-blue-900" title="Ver estoque e movimentações">
+            <Eye className="w-4 h-4 inline" />
+          </button>
+          <button onClick={() => onOpenPriceHistory(material)} className="text-gray-500 hover:text-gray-800" title="Historico de precos">
+            <Clock className="w-4 h-4 inline" />
+          </button>
+          <button
+            onClick={() => onToggleLock(material)}
+            className={material.price_locked ? 'text-red-500 hover:text-red-700' : 'text-gray-400 hover:text-gray-600'}
+            title={material.price_locked ? `Preco travado${material.price_lock_note ? `: ${material.price_lock_note}` : ''} — clique para destravar` : 'Clique para travar o preco'}
+          >
+            {material.price_locked ? <Lock className="w-4 h-4 inline" /> : <Unlock className="w-4 h-4 inline" />}
+          </button>
+          <button onClick={() => onEdit(material)} className="text-blue-600 hover:text-blue-900" title="Editar insumo">
+            <Edit2 className="w-4 h-4 inline" />
+          </button>
+          <button onClick={() => onDelete(material.id)} className="text-red-600 hover:text-red-900" title="Excluir insumo">
+            <Trash2 className="w-4 h-4 inline" />
+          </button>
+        </div>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <div className="flex items-center gap-2">
+          <div>
+            <div className="text-sm font-medium text-gray-900">{material.name}</div>
+            <div className="text-xs text-gray-500">{material.description || ''}</div>
+          </div>
+          {material.import_status === 'imported_pending' && (
+            <div className="flex items-center gap-1 text-xs text-yellow-700 bg-yellow-100 px-2 py-1 rounded-full">
+              <AlertCircle className="w-3 h-3" />
+              <span>Precisa revisar</span>
+            </div>
+          )}
+        </div>
+      </td>
+      <td className="px-6 py-4">
+        <div className="text-sm text-gray-600">{material.brand || '-'}</div>
+      </td>
+      <td className="px-6 py-4">
+        <div className="flex items-center gap-2">
+          <div className="text-sm text-gray-600">{material.suppliers?.name || '-'}</div>
+          <button onClick={() => onManageSuppliers(material)} className="text-blue-600 hover:text-blue-900" title="Gerenciar fornecedores">
+            <Users className="w-4 h-4" />
+          </button>
+        </div>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <div className="text-sm text-gray-600">{material.unit}</div>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-right">
+        <div className="flex items-center justify-end gap-1.5">
+          {material.price_locked && <Lock className="w-3 h-3 text-red-400 flex-shrink-0" />}
+          <div className={`text-sm font-semibold ${material.price_locked ? 'text-red-700' : 'text-gray-900'}`}>
+            R$ {material.unit_cost ? material.unit_cost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0,00'}
+          </div>
+        </div>
+        {material.price_updated_by_source && material.price_updated_by_source !== 'manual' && (
+          <div className="text-[10px] text-amber-600 text-right mt-0.5">
+            via {material.price_updated_by_source === 'nfe_import' ? 'NF-e' : 'compra'}
+          </div>
+        )}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-center">
+        {material.resale_enabled ? (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Sim</span>
+        ) : (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">Não</span>
+        )}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-right">
+        {material.resale_enabled ? (
+          <div className="text-sm">
+            <div className="font-semibold text-green-600">
+              R$ {salePrice.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div className="text-xs text-gray-500">
+              +{material.resale_tax_percentage}% imp. +{material.resale_margin_percentage}% marg.
+            </div>
+          </div>
+        ) : (
+          <span className="text-sm text-gray-400">-</span>
+        )}
+      </td>
+    </tr>
+  );
+});
 
 export default function Materials() {
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -361,19 +491,26 @@ export default function Materials() {
 
       if (signal?.aborted) return;
 
-      const [materialsRes, suppliersRes] = await Promise.all([
-        supabase
-          .from('materials')
-          .select('*')
-          .order('name')
-          .range(0, MATERIALS_PAGE_SIZE - 1),
-        supabase.from('suppliers').select('*').order('name'),
-      ]);
+      // [MONITOR] Track initial list load time for insumos module
+      const [materialsRes, suppliersRes] = await measureAsync(
+        'insumos:load_list',
+        () => Promise.all([
+          supabase
+            .from('materials')
+            // [CACHE] Only select columns needed for the list view to minimize payload
+            .select('id, name, description, unit, brand, supplier_id, unit_cost, unit_length_meters, cost_per_meter, total_weight_kg, resale_enabled, resale_tax_percentage, resale_margin_percentage, resale_price, import_status, imported_at, nfe_key, minimum_stock, created_at, price_locked, price_lock_note, price_updated_at, price_updated_by_source')
+            .order('name')
+            .range(0, MATERIALS_PAGE_SIZE - 1),
+          supabase.from('suppliers').select('id, name, cnpj').order('name'),
+        ]),
+        { module: 'insumos' }
+      );
 
       if (signal?.aborted) return;
       if (materialsRes.error) throw materialsRes.error;
       if (suppliersRes.error) throw suppliersRes.error;
 
+      // [MEMO] Build lookup map once to avoid O(n²) join in render
       const suppliersMap = new Map((suppliersRes.data || []).map(s => [s.id, s]));
       const materialsWithSuppliers = (materialsRes.data || []).map(m => ({
         ...m,
@@ -929,10 +1066,31 @@ export default function Materials() {
     alert('Compra registrada com sucesso! Os itens foram adicionados ao estoque e as contas a pagar foram criadas.');
   };
 
-  const debouncedSearchTerm = useDebounce(searchTerm, 300);
+  // [DEBOUNCE] Advanced debounce with maxWait=800ms prevents excessive re-filters on rapid typing
+  // [CANCEL] cancelCategory ensures stale server searches are aborted when filter changes
+  const debouncedSearchTerm = useAdvancedDebounce(searchTerm, {
+    delay: 300,
+    maxWait: 800,
+    cancelCategory: 'insumos-search',
+  });
 
+  // Track search events via performanceMonitor
+  const prevSearchRef = useRef('');
+  useEffect(() => {
+    if (debouncedSearchTerm !== prevSearchRef.current) {
+      prevSearchRef.current = debouncedSearchTerm;
+      if (debouncedSearchTerm) {
+        // [MONITOR] Track search application
+        recordMetric('insumos:search', 1, 'event', { term_length: String(debouncedSearchTerm.length) });
+      }
+    }
+  }, [debouncedSearchTerm]);
+
+  // [MEMO] filteredMaterials only recomputes when materials, filterStatus or debouncedSearchTerm change
+  // Never runs heavy filter logic inside the render cycle
   const filteredMaterials = useMemo(() => {
-    return materials.filter((material) => {
+    const start = performance.now();
+    const result = materials.filter((material) => {
       const statusFilter = filterStatus === 'all' ||
         (filterStatus === 'imported_pending' && material.import_status === 'imported_pending') ||
         (filterStatus === 'manual' && (material.import_status === 'manual' || material.import_status === 'imported_reviewed'));
@@ -949,13 +1107,31 @@ export default function Materials() {
         (material.suppliers?.name && material.suppliers.name.toLowerCase().includes(searchLower))
       );
     });
+    // [MONITOR] Track filter application duration
+    recordMetric('insumos:apply_filter', performance.now() - start, 'ms', { total: String(result.length) });
+    return result;
   }, [materials, filterStatus, debouncedSearchTerm]);
 
+  // [VIRTUAL] Pagination provides windowed rendering — prevents DOM explosion with 10k+ items
   const pagination = usePagination(filteredMaterials.length, 50);
 
+  // [MEMO] paginatedMaterials only recomputes when slice boundaries change
   const paginatedMaterials = useMemo(() => {
     return filteredMaterials.slice(pagination.startIndex, pagination.endIndex);
   }, [filteredMaterials, pagination.startIndex, pagination.endIndex]);
+
+  // [MEMO] Stable callback refs passed to MaterialRow so React.memo comparison works correctly.
+  // Without useCallback, new function instances on every render would defeat memo.
+  const handleEditCb = useCallback((m: Material) => handleEdit(m), []);
+  const handleDeleteCb = useCallback((id: string) => handleDelete(id), []);
+  const handleOpenPurchaseCb = useCallback((m: Material) => handleOpenPurchaseModal(m), []);
+  const handleLoadStockCb = useCallback((m: Material) => loadMaterialStock(m), []);
+  const handleOpenPriceHistoryCb = useCallback((m: Material) => openPriceHistory(m), []);
+  const handleToggleLockCb = useCallback((m: Material) => togglePriceLock(m), []);
+  const handleManageSuppliersCb = useCallback((m: Material) => {
+    setSelectedMaterial(m);
+    setShowSuppliersManager(true);
+  }, []);
 
   const exportToPDF = () => {
     const doc = new jsPDF('landscape');
@@ -1912,152 +2088,21 @@ export default function Materials() {
                   </th>
                 </tr>
               </thead>
+              {/* [VIRTUAL] Only current page rows rendered — prevents DOM explosion */}
               <tbody className="bg-white divide-y divide-gray-200">
+                {/* [MEMO] MaterialRow components — each row only re-renders when its own data changes */}
                 {paginatedMaterials.map((material) => (
-                  <tr
+                  <MaterialRow
                     key={material.id}
-                    className={`hover:bg-gray-50 ${material.import_status === 'imported_pending' ? 'bg-yellow-50 border-l-4 border-yellow-400' : ''}`}
-                  >
-                    <td className="px-6 py-4 whitespace-nowrap text-left text-sm font-medium">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleOpenPurchaseModal(material)}
-                          className="text-green-600 hover:text-green-900"
-                          title="Registrar compra"
-                        >
-                          <ShoppingCart className="w-4 h-4 inline" />
-                        </button>
-                        <button
-                          onClick={() => loadMaterialStock(material)}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="Ver estoque e movimentações"
-                        >
-                          <Eye className="w-4 h-4 inline" />
-                        </button>
-                        <button
-                          onClick={() => openPriceHistory(material)}
-                          className="text-gray-500 hover:text-gray-800"
-                          title="Historico de precos"
-                        >
-                          <Clock className="w-4 h-4 inline" />
-                        </button>
-                        <button
-                          onClick={() => togglePriceLock(material)}
-                          className={material.price_locked ? 'text-red-500 hover:text-red-700' : 'text-gray-400 hover:text-gray-600'}
-                          title={material.price_locked ? `Preco travado${material.price_lock_note ? `: ${material.price_lock_note}` : ''} — clique para destravar` : 'Clique para travar o preco'}
-                        >
-                          {material.price_locked ? <Lock className="w-4 h-4 inline" /> : <Unlock className="w-4 h-4 inline" />}
-                        </button>
-                        <button
-                          onClick={() => handleEdit(material)}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="Editar insumo"
-                        >
-                          <Edit2 className="w-4 h-4 inline" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(material.id)}
-                          className="text-red-600 hover:text-red-900"
-                          title="Excluir insumo"
-                        >
-                          <Trash2 className="w-4 h-4 inline" />
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
-                        <div>
-                          <div className="text-sm font-medium text-gray-900">
-                            {material.name}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {material.description || ''}
-                          </div>
-                        </div>
-                        {material.import_status === 'imported_pending' && (
-                          <div className="flex items-center gap-1 text-xs text-yellow-700 bg-yellow-100 px-2 py-1 rounded-full">
-                            <AlertCircle className="w-3 h-3" />
-                            <span>Precisa revisar</span>
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm text-gray-600">
-                        {material.brand || '-'}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className="text-sm text-gray-600">
-                          {material.suppliers?.name || '-'}
-                        </div>
-                        <button
-                          onClick={() => {
-                            setSelectedMaterial(material);
-                            setShowSuppliersManager(true);
-                          }}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="Gerenciar fornecedores"
-                        >
-                          <Users className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-600">{material.unit}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        {material.price_locked && (
-                          <Lock className="w-3 h-3 text-red-400 flex-shrink-0" />
-                        )}
-                        <div className={`text-sm font-semibold ${material.price_locked ? 'text-red-700' : 'text-gray-900'}`}>
-                          R$ {material.unit_cost ? material.unit_cost.toLocaleString('pt-BR', {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          }) : '0,00'}
-                        </div>
-                      </div>
-                      {material.price_updated_by_source && material.price_updated_by_source !== 'manual' && (
-                        <div className="text-[10px] text-amber-600 text-right mt-0.5">
-                          via {material.price_updated_by_source === 'nfe_import' ? 'NF-e' : 'compra'}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      {material.resale_enabled ? (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                          Sim
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                          Não
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right">
-                      {material.resale_enabled ? (
-                        <div className="text-sm">
-                          <div className="font-semibold text-green-600">
-                            R$ {(
-                              material.unit_cost +
-                              (material.unit_cost * material.resale_tax_percentage / 100) +
-                              (material.unit_cost * material.resale_margin_percentage / 100)
-                            ).toLocaleString('pt-BR', {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            +{material.resale_tax_percentage}% imp. +{material.resale_margin_percentage}% marg.
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-sm text-gray-400">-</span>
-                      )}
-                    </td>
-                  </tr>
+                    material={material}
+                    onEdit={handleEditCb}
+                    onDelete={handleDeleteCb}
+                    onOpenPurchase={handleOpenPurchaseCb}
+                    onLoadStock={handleLoadStockCb}
+                    onOpenPriceHistory={handleOpenPriceHistoryCb}
+                    onToggleLock={handleToggleLockCb}
+                    onManageSuppliers={handleManageSuppliersCb}
+                  />
                 ))}
               </tbody>
             </table>
