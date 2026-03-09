@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import { supabase } from '../lib/supabase';
+import { useRealtimeChannel, RealtimeEvent } from '../hooks/useRealtimeChannel';
+import { useNormalizedRefTable } from '../hooks/useNormalizedRefTable';
 // [DEBOUNCE] Advanced debounce with maxWait prevents search floods
 import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
 // [MONITOR] Performance tracking for receitas/despesas operations
@@ -406,6 +408,175 @@ export default function FactoryFinanceManager({
       console.error('Erro ao carregar formas de pagamento:', error);
     }
   }
+
+  const costCategoriesRef = useRef<CostCategory[]>([]);
+  costCategoriesRef.current = costCategories;
+
+  const paymentMethodsRef = useRef<PaymentMethod[]>([]);
+  paymentMethodsRef.current = paymentMethods;
+
+  const customersRef = useRef<Customer[]>([]);
+  customersRef.current = customers;
+
+  const constructionWorksRef = useRef<ConstructionWork[]>([]);
+  constructionWorksRef.current = constructionWorks;
+
+  const { populate: populateCostCategoriesCache } = useNormalizedRefTable<CostCategory>({
+    tableName: 'cost_categories',
+    selectFields: 'id, name, type',
+  });
+
+  const { populate: populatePaymentMethodsCache } = useNormalizedRefTable<PaymentMethod>({
+    tableName: 'payment_methods',
+    selectFields: 'id, name',
+  });
+
+  const { populate: populateCustomersCache } = useNormalizedRefTable<Customer>({
+    tableName: 'customers',
+    selectFields: 'id, name, cpf, person_type',
+  });
+
+  const { populate: populateConstructionWorksCache } = useNormalizedRefTable<ConstructionWork>({
+    tableName: 'construction_works',
+    selectFields: 'id, work_name, customer_id, status',
+  });
+
+  useEffect(() => {
+    if (costCategories.length > 0) populateCostCategoriesCache(costCategories);
+  }, [costCategories, populateCostCategoriesCache]);
+
+  useEffect(() => {
+    if (paymentMethods.length > 0) populatePaymentMethodsCache(paymentMethods);
+  }, [paymentMethods, populatePaymentMethodsCache]);
+
+  useEffect(() => {
+    if (customers.length > 0) populateCustomersCache(customers);
+  }, [customers, populateCustomersCache]);
+
+  useEffect(() => {
+    if (constructionWorks.length > 0) populateConstructionWorksCache(constructionWorks);
+  }, [constructionWorks, populateConstructionWorksCache]);
+
+  function enrichEntry(raw: Record<string, unknown>): CashFlowEntry {
+    const costCatId = raw.cost_category_id as string | null;
+    const payMethodId = raw.payment_method_id as string | null;
+    const customerId = raw.customer_id as string | null;
+    const workId = raw.construction_work_id as string | null;
+
+    const costCat = costCatId
+      ? (costCategoriesRef.current.find((c) => c.id === costCatId) ?? null)
+      : null;
+    const payMethod = payMethodId
+      ? (paymentMethodsRef.current.find((p) => p.id === payMethodId) ?? null)
+      : null;
+    const customer = customerId
+      ? (customersRef.current.find((c) => c.id === customerId) ?? null)
+      : null;
+    const work = workId
+      ? (constructionWorksRef.current.find((w) => w.id === workId) ?? null)
+      : null;
+
+    return {
+      ...(raw as unknown as CashFlowEntry),
+      cost_categories: costCat ? { name: costCat.name, type: costCat.type } : null,
+      payment_methods: payMethod ? { name: payMethod.name } : null,
+      customers: customer ? { name: customer.name } : null,
+      construction_works: work ? { work_name: work.work_name } : null,
+    };
+  }
+
+  const startDateRef = useRef(startDate);
+  startDateRef.current = startDate;
+  const endDateRef = useRef(endDate);
+  endDateRef.current = endDate;
+
+  const pendingInsertCashFlowRef = useRef<Set<string>>(new Set());
+  const insertCashFlowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useRealtimeChannel({
+    channelName: 'receitas-cash-flow',
+    tables: ['cash_flow'],
+    onBatchEvents: useCallback((events: RealtimeEvent[]) => {
+      const insertIds: string[] = [];
+
+      setEntries((prev) => {
+        let next = [...prev];
+
+        for (const evt of events) {
+          if (evt.eventType === 'DELETE') {
+            const oldId = (evt.old as any)?.id as string | undefined;
+            if (oldId) next = next.filter((e) => e.id !== oldId);
+            continue;
+          }
+
+          if (evt.eventType === 'UPDATE') {
+            const raw = evt.new as Record<string, unknown>;
+            const id = raw.id as string | undefined;
+            if (!id) continue;
+            const entryDate = raw.date as string | undefined;
+            const sd = startDateRef.current;
+            const ed = endDateRef.current;
+            const outsideFilter =
+              (sd && entryDate && entryDate < sd) ||
+              (ed && entryDate && entryDate > ed);
+            if (outsideFilter) {
+              next = next.filter((e) => e.id !== id);
+              continue;
+            }
+            const exists = next.some((e) => e.id === id);
+            if (exists) {
+              next = next.map((e) => (e.id === id ? enrichEntry(raw) : e));
+            } else {
+              insertIds.push(id);
+            }
+            continue;
+          }
+
+          if (evt.eventType === 'INSERT') {
+            const id = (evt.new as any)?.id as string | undefined;
+            const bu = (evt.new as any)?.business_unit as string | undefined;
+            if (!id) continue;
+            if (bu && bu !== 'factory') continue;
+            const alreadyPresent = next.some((e) => e.id === id);
+            if (!alreadyPresent) insertIds.push(id);
+          }
+        }
+
+        return next;
+      });
+
+      if (insertIds.length > 0) {
+        insertIds.forEach((id) => pendingInsertCashFlowRef.current.add(id));
+        if (insertCashFlowTimerRef.current) clearTimeout(insertCashFlowTimerRef.current);
+        insertCashFlowTimerRef.current = setTimeout(async () => {
+          const ids = Array.from(pendingInsertCashFlowRef.current);
+          pendingInsertCashFlowRef.current.clear();
+          try {
+            let batchQuery = supabase
+              .from('cash_flow')
+              .select('id, date, type, description, amount, payment_method_id, cost_category_id, purchase_id, sale_id, payable_account_id, customer_revenue_id, customer_id, construction_work_id, notes, reference, payment_status, payment_confirmed_date')
+              .in('id', ids)
+              .eq('business_unit', 'factory');
+            if (startDateRef.current) batchQuery = batchQuery.gte('date', startDateRef.current);
+            if (endDateRef.current) batchQuery = batchQuery.lte('date', endDateRef.current);
+            const { data, error } = await batchQuery;
+            if (error) throw error;
+            if (data && data.length > 0) {
+              const enriched = data.map((row) => enrichEntry(row as Record<string, unknown>));
+              setEntries((prev) => {
+                const existingIds = new Set(prev.map((e) => e.id));
+                const newOnes = enriched.filter((e) => !existingIds.has(e.id));
+                if (newOnes.length === 0) return prev;
+                return [...newOnes, ...prev];
+              });
+            }
+          } catch (err) {
+            console.error('FactoryFinanceManager: failed to fetch new inserts', err);
+          }
+        }, 400);
+      }
+    }, []),
+  });
 
   // [DEBOUNCE] Advanced debounce with maxWait=800ms — prevents rapid re-filters while typing
   // [CANCEL] cancelCategory cancels stale server queries on each keystroke

@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { DollarSign, TrendingUp, AlertCircle, FileText, Download, Filter, Search, RefreshCw } from 'lucide-react';
+import { useRealtimeChannel, RealtimeEvent } from '../hooks/useRealtimeChannel';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -60,91 +61,87 @@ export default function SalesPrices() {
     return filtered;
   }, [items, categoryFilter, activeOnly, searchTerm]);
 
+  const itemsRef = useRef<PriceItem[]>([]);
+  itemsRef.current = items;
+
+  function transformProduct(product: Record<string, any>): PriceItem {
+    const suggestedPrice = product.final_sale_price || product.sale_price || null;
+    const unitCost = product.custo_unitario_materiais || product.production_cost || null;
+    const profit = suggestedPrice && unitCost ? suggestedPrice - unitCost : null;
+    const realMargin =
+      suggestedPrice && unitCost && suggestedPrice > 0
+        ? ((suggestedPrice - unitCost) / suggestedPrice) * 100
+        : null;
+    return {
+      id: product.id,
+      category: 'produto',
+      code: product.code || '-',
+      name: product.name,
+      unit: product.unit || 'unid',
+      unit_cost: unitCost,
+      tax_percentage: product.tax_percentage ?? null,
+      margin_percentage: product.margin_percentage ?? null,
+      suggested_price: suggestedPrice,
+      profit,
+      real_margin: realMargin,
+      max_discount: product.maximum_discount_percent ?? null,
+      min_price: product.minimum_price ?? null,
+      notes: '',
+      updated_at: product.created_at ?? null,
+      is_active: true,
+    };
+  }
+
+  function transformMaterial(material: Record<string, any>): PriceItem {
+    const suggestedPrice = material.resale_price || null;
+    const unitCost = material.unit_cost || null;
+    const profit = suggestedPrice && unitCost ? suggestedPrice - unitCost : null;
+    const realMargin =
+      suggestedPrice && unitCost && suggestedPrice > 0
+        ? ((suggestedPrice - unitCost) / suggestedPrice) * 100
+        : null;
+    return {
+      id: material.id,
+      category: 'revenda',
+      code: material.id.substring(0, 8).toUpperCase(),
+      name: material.name,
+      unit: material.unit || 'unid',
+      unit_cost: unitCost,
+      tax_percentage: material.resale_tax_percentage ?? null,
+      margin_percentage: material.resale_margin_percentage ?? null,
+      suggested_price: suggestedPrice,
+      profit,
+      real_margin: realMargin,
+      max_discount: material.maximum_discount_percent ?? null,
+      min_price: material.minimum_resale_price ?? null,
+      notes: material.package_size ? `Embalagem: ${material.package_size}` : '',
+      updated_at: material.created_at ?? null,
+      is_active: true,
+    };
+  }
+
   const loadPriceData = useCallback(async () => {
     setLoading(true);
     try {
-      const priceItems: PriceItem[] = [];
+      const [productsRes, materialsRes] = await Promise.all([
+        supabase
+          .from('products')
+          .select('id, code, name, unit, custo_unitario_materiais, production_cost, sale_price, final_sale_price, margin_percentage, tax_percentage, minimum_price, maximum_discount_percent, created_at')
+          .order('name'),
+        supabase
+          .from('materials')
+          .select('id, name, unit, unit_cost, resale_enabled, resale_price, resale_margin_percentage, resale_tax_percentage, package_size, minimum_resale_price, maximum_discount_percent, created_at')
+          .eq('resale_enabled', true)
+          .order('name'),
+      ]);
 
-      const { data: products, error: productsError } = await supabase
-        .from('products')
-        .select('id, code, name, unit, custo_unitario_materiais, production_cost, sale_price, final_sale_price, margin_percentage, tax_percentage, minimum_price, maximum_discount_percent, created_at')
-        .order('name');
+      if (productsRes.error) throw productsRes.error;
+      if (materialsRes.error) throw materialsRes.error;
 
-      if (productsError) {
-        console.error('Erro ao buscar produtos:', productsError);
-        throw productsError;
-      }
-
-      (products || []).forEach(product => {
-        const suggestedPrice = product.final_sale_price || product.sale_price || null;
-        const unitCost = product.custo_unitario_materiais || product.production_cost || null;
-        const profit = suggestedPrice && unitCost ? suggestedPrice - unitCost : null;
-        const realMargin = suggestedPrice && unitCost && suggestedPrice > 0
-          ? ((suggestedPrice - unitCost) / suggestedPrice) * 100
-          : null;
-
-        priceItems.push({
-          id: product.id,
-          category: 'produto',
-          code: product.code || '-',
-          name: product.name,
-          unit: product.unit || 'unid',
-          unit_cost: unitCost,
-          tax_percentage: product.tax_percentage,
-          margin_percentage: product.margin_percentage,
-          suggested_price: suggestedPrice,
-          profit: profit,
-          real_margin: realMargin,
-          max_discount: (product as any).maximum_discount_percent,
-          min_price: (product as any).minimum_price,
-          notes: '',
-          updated_at: product.created_at,
-          is_active: true
-        });
-      });
-
-      const { data: materials, error: materialsError } = await supabase
-        .from('materials')
-        .select('id, name, unit, unit_cost, resale_enabled, resale_price, resale_margin_percentage, resale_tax_percentage, package_size, minimum_resale_price, maximum_discount_percent, created_at')
-        .eq('resale_enabled', true)
-        .order('name');
-
-      if (materialsError) {
-        console.error('Erro ao buscar materiais:', materialsError);
-        throw materialsError;
-      }
-
-      (materials || []).forEach(material => {
-        const suggestedPrice = material.resale_price || null;
-        const unitCost = material.unit_cost || null;
-        const profit = suggestedPrice && unitCost ? suggestedPrice - unitCost : null;
-        const realMargin = suggestedPrice && unitCost && suggestedPrice > 0
-          ? ((suggestedPrice - unitCost) / suggestedPrice) * 100
-          : null;
-
-        const notes = material.package_size
-          ? `Embalagem: ${material.package_size}`
-          : '';
-
-        priceItems.push({
-          id: material.id,
-          category: 'revenda',
-          code: material.id.substring(0, 8).toUpperCase(),
-          name: material.name,
-          unit: material.unit || 'unid',
-          unit_cost: unitCost,
-          tax_percentage: material.resale_tax_percentage,
-          margin_percentage: material.resale_margin_percentage,
-          suggested_price: suggestedPrice,
-          profit: profit,
-          real_margin: realMargin,
-          max_discount: (material as any).maximum_discount_percent,
-          min_price: (material as any).minimum_resale_price,
-          notes: notes,
-          updated_at: material.created_at,
-          is_active: true
-        });
-      });
+      const priceItems: PriceItem[] = [
+        ...(productsRes.data ?? []).map(transformProduct),
+        ...(materialsRes.data ?? []).map(transformMaterial),
+      ];
 
       setItems(priceItems);
     } catch (error) {
@@ -157,17 +154,82 @@ export default function SalesPrices() {
 
   useEffect(() => {
     loadPriceData();
+  }, []);
 
-    const subscription = supabase
-      .channel('price_table_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => { loadPriceData(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, () => { loadPriceData(); })
-      .subscribe();
+  useRealtimeChannel({
+    channelName: 'price-table-changes',
+    tables: ['products', 'materials'],
+    onBatchEvents: useCallback((events: RealtimeEvent[]) => {
+      setItems((prev) => {
+        let next = [...prev];
 
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [loadPriceData]);
+        for (const evt of events) {
+          const isProduct = evt.table === 'products';
+          const isResaleMaterial = evt.table === 'materials';
+
+          if (evt.eventType === 'DELETE') {
+            const oldId = (evt.old as any)?.id as string | undefined;
+            if (oldId) {
+              next = next.filter((item) => item.id !== oldId);
+            }
+            continue;
+          }
+
+          if (evt.eventType === 'UPDATE') {
+            const id = (evt.new as any)?.id as string | undefined;
+            if (!id) continue;
+
+            if (isProduct) {
+              next = next.map((item) =>
+                item.id === id && item.category === 'produto'
+                  ? transformProduct(evt.new as Record<string, any>)
+                  : item
+              );
+            } else if (isResaleMaterial) {
+              const raw = evt.new as Record<string, any>;
+              if (!raw.resale_enabled) {
+                next = next.filter((item) => !(item.id === id && item.category === 'revenda'));
+              } else {
+                const existing = next.find((item) => item.id === id && item.category === 'revenda');
+                if (existing) {
+                  next = next.map((item) =>
+                    item.id === id && item.category === 'revenda'
+                      ? transformMaterial(raw)
+                      : item
+                  );
+                } else {
+                  next = [...next, transformMaterial(raw)];
+                }
+              }
+            }
+            continue;
+          }
+
+          if (evt.eventType === 'INSERT') {
+            const id = (evt.new as any)?.id as string | undefined;
+            if (!id) continue;
+
+            if (isProduct) {
+              const alreadyPresent = next.some((item) => item.id === id && item.category === 'produto');
+              if (!alreadyPresent) {
+                next = [...next, transformProduct(evt.new as Record<string, any>)];
+              }
+            } else if (isResaleMaterial) {
+              const raw = evt.new as Record<string, any>;
+              if (raw.resale_enabled) {
+                const alreadyPresent = next.some((item) => item.id === id && item.category === 'revenda');
+                if (!alreadyPresent) {
+                  next = [...next, transformMaterial(raw)];
+                }
+              }
+            }
+          }
+        }
+
+        return next;
+      });
+    }, []),
+  });
 
   function exportToCSV() {
     try {

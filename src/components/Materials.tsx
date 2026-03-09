@@ -14,6 +14,8 @@ import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
 import { measureAsync, recordMetric } from '../lib/performanceMonitor';
 // [CANCEL] Request cancellation on search/filter changes
 import { cancelRequestsByCategory } from '../lib/requestCancellation';
+import { useRealtimeChannel, RealtimeEvent } from '../hooks/useRealtimeChannel';
+import { useNormalizedRefTable } from '../hooks/useNormalizedRefTable';
 
 interface Supplier {
   id: string;
@@ -246,6 +248,96 @@ export default function Materials() {
 
 
   const { signal } = useAbortController();
+
+  const suppliersRef = useRef<Supplier[]>([]);
+  suppliersRef.current = suppliers;
+
+  const pendingInsertIdsRef = useRef<Set<string>>(new Set());
+  const insertFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const { populate: populateSuppliersCache } = useNormalizedRefTable<Supplier>({
+    tableName: 'suppliers',
+    selectFields: 'id, name, cnpj',
+  });
+
+  useRealtimeChannel({
+    channelName: 'insumos-materials',
+    tables: ['materials'],
+    onBatchEvents: useCallback((events: RealtimeEvent[]) => {
+      const insertIds: string[] = [];
+
+      setMaterials((prev) => {
+        let next = [...prev];
+
+        for (const evt of events) {
+          if (evt.eventType === 'DELETE') {
+            const oldId = (evt.old as any)?.id as string | undefined;
+            if (oldId) next = next.filter((m) => m.id !== oldId);
+            continue;
+          }
+
+          if (evt.eventType === 'UPDATE') {
+            const raw = evt.new as Partial<Material>;
+            if (!raw.id) continue;
+            const supplierObj = raw.supplier_id
+              ? (suppliersRef.current.find((s) => s.id === raw.supplier_id) ?? null)
+              : null;
+            next = next.map((m) =>
+              m.id === raw.id
+                ? { ...m, ...(raw as Material), suppliers: supplierObj ?? m.suppliers }
+                : m
+            );
+            continue;
+          }
+
+          if (evt.eventType === 'INSERT') {
+            const id = (evt.new as any)?.id as string | undefined;
+            if (!id) continue;
+            const alreadyPresent = next.some((m) => m.id === id);
+            if (!alreadyPresent) insertIds.push(id);
+          }
+        }
+
+        return next;
+      });
+
+      if (insertIds.length > 0) {
+        insertIds.forEach((id) => pendingInsertIdsRef.current.add(id));
+        if (insertFlushTimerRef.current) clearTimeout(insertFlushTimerRef.current);
+        insertFlushTimerRef.current = setTimeout(async () => {
+          const ids = Array.from(pendingInsertIdsRef.current);
+          pendingInsertIdsRef.current.clear();
+          try {
+            const { data, error } = await supabase
+              .from('materials')
+              .select('id, name, description, unit, brand, supplier_id, unit_cost, unit_length_meters, cost_per_meter, total_weight_kg, resale_enabled, resale_tax_percentage, resale_margin_percentage, resale_price, import_status, imported_at, nfe_key, minimum_stock, created_at, price_locked, price_lock_note, price_updated_at, price_updated_by_source')
+              .in('id', ids);
+            if (error) throw error;
+            if (data && data.length > 0) {
+              const supMap = new Map(suppliersRef.current.map((s) => [s.id, s]));
+              const enriched = data.map((m) => ({
+                ...m,
+                suppliers: m.supplier_id ? (supMap.get(m.supplier_id) ?? null) : null,
+              })) as Material[];
+              setMaterials((prev) => {
+                const existingIds = new Set(prev.map((m) => m.id));
+                const newOnes = enriched.filter((m) => !existingIds.has(m.id));
+                return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+              });
+            }
+          } catch (err) {
+            console.error('Materials: failed to fetch new inserts', err);
+          }
+        }, 400);
+      }
+    }, []),
+  });
+
+  useEffect(() => {
+    if (suppliers.length > 0) {
+      populateSuppliersCache(suppliers);
+    }
+  }, [suppliers, populateSuppliersCache]);
 
   useEffect(() => {
     loadData(signal);
