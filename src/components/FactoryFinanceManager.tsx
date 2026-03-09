@@ -291,6 +291,21 @@ export default function FactoryFinanceManager({
     construction_work_id: '',
   });
 
+  // [DEBOUNCE] Prevent rapid-fire loadData calls when the user adjusts the date range
+  const debouncedStartDate = useAdvancedDebounce(startDate, {
+    delay: 350,
+    maxWait: 800,
+    cancelCategory: 'receitas-despesas',
+  });
+  const debouncedEndDate = useAdvancedDebounce(endDate, {
+    delay: 350,
+    maxWait: 800,
+    cancelCategory: 'receitas-despesas',
+  });
+
+  // [GUARD] Prevent concurrent loadData invocations
+  const isLoadingDataRef = useRef(false);
+
   useEffect(() => {
     if (initialStartDate) setStartDate(initialStartDate);
     if (initialEndDate) setEndDate(initialEndDate);
@@ -298,24 +313,31 @@ export default function FactoryFinanceManager({
 
   useEffect(() => {
     loadData();
-  }, [startDate, endDate]);
+  }, [debouncedStartDate, debouncedEndDate]);
 
   async function loadData() {
+    if (isLoadingDataRef.current) return;
+    isLoadingDataRef.current = true;
     setLoading(true);
-    await Promise.all([
-      loadEntries(),
-      loadCostCategories(),
-      loadPaymentMethods(),
-      loadCustomers(),
-      loadConstructionWorks(),
-    ]);
-    setLoading(false);
+    try {
+      await Promise.all([
+        loadEntries(),
+        loadCostCategories(),
+        loadPaymentMethods(),
+        loadCustomers(),
+        loadConstructionWorks(),
+      ]);
+    } finally {
+      isLoadingDataRef.current = false;
+      setLoading(false);
+    }
   }
 
   async function loadEntries() {
-    // [CANCEL] Cancel any previous in-flight entries query before starting a new one
-    const reqKey = createRequestKey('receitas-despesas', 'load_entries', { startDate, endDate });
-    registerRequest(reqKey);
+    // [CANCEL] Use a stable key (no date params) so registerRequest always cancels the previous
+    // in-flight request regardless of which date value triggered the reload.
+    const reqKey = createRequestKey('receitas-despesas', 'load_entries');
+    const controller = registerRequest(reqKey);
 
     try {
       // [MONITOR] Track list load time for receitas/despesas module
@@ -336,9 +358,12 @@ export default function FactoryFinanceManager({
         },
         { module: 'receitas-despesas' }
       );
+      // [STALE] Discard the response if a newer request has already been registered
+      if (controller.signal.aborted) return;
       if (error) throw error;
       setEntries(data || []);
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
       console.error('Erro ao carregar lançamentos:', error);
     } finally {
       unregisterRequest(reqKey);
