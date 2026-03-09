@@ -1,5 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import { supabase } from '../lib/supabase';
+import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
+import { registerRequest, unregisterRequest, createRequestKey } from '../lib/requestCancellation';
+import VirtualizedListAdvanced, { useVirtualizedHeight } from './VirtualizedListAdvanced';
 import {
   DollarSign,
   TrendingUp,
@@ -17,6 +20,10 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import PayrollConfirmationModal from './engineering/PayrollConfirmationModal';
+
+const ENTRY_ITEM_HEIGHT = 64;
+const MAX_LIST_HEIGHT = 600;
+const ENTRIES_PAGE_SIZE = 50;
 
 interface FinanceEntry {
   id: string;
@@ -76,6 +83,73 @@ interface EngineeringFinanceManagerProps {
   initialStartDate?: string;
   initialEndDate?: string;
 }
+
+// ─── Memoized entry row ───────────────────────────────────────────────────────
+interface FinanceEntryRowProps {
+  entry: FinanceEntry;
+  style: React.CSSProperties;
+  getCategoryLabel: (entry: FinanceEntry) => string;
+  formatCurrency: (value: number) => string;
+  onEdit: (entry: FinanceEntry) => void;
+  onDelete: (id: string) => void;
+}
+
+const FinanceEntryRow = memo(function FinanceEntryRow({
+  entry, style, getCategoryLabel, formatCurrency, onEdit, onDelete,
+}: FinanceEntryRowProps) {
+  const isSystemEntry = !!(entry.payment_id || entry.advance_id || entry.payroll_schedule_id);
+  return (
+    <div style={style} className="flex items-center border-b border-gray-100 hover:bg-gray-50 bg-white px-6 text-sm gap-3">
+      <div className="w-24 whitespace-nowrap text-gray-900 flex-shrink-0">
+        {format(new Date(entry.entry_date), 'dd/MM/yyyy')}
+      </div>
+      <div className="w-24 flex-shrink-0">
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+          entry.entry_type === 'receita' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+        }`}>
+          {entry.entry_type === 'receita' ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+          {entry.entry_type === 'receita' ? 'Receita' : 'Despesa'}
+        </span>
+      </div>
+      <div className="w-36 text-gray-600 flex-shrink-0 truncate">{getCategoryLabel(entry)}</div>
+      <div className="flex-1 min-w-0">
+        <div className="text-gray-900 truncate">{entry.description}</div>
+        {entry.notes && <p className="text-xs text-gray-500 truncate">{entry.notes}</p>}
+      </div>
+      <div className="w-32 text-right font-medium flex-shrink-0">
+        <span className={entry.entry_type === 'receita' ? 'text-green-600' : 'text-red-600'}>
+          {entry.entry_type === 'despesa' && '-'}{formatCurrency(entry.amount)}
+        </span>
+      </div>
+      <div className="w-24 text-center flex-shrink-0">
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+          entry.status === 'efetivado' ? 'bg-blue-100 text-blue-800'
+          : entry.status === 'pendente' ? 'bg-yellow-100 text-yellow-800'
+          : 'bg-gray-100 text-gray-800'
+        }`}>
+          {entry.status === 'efetivado' ? <CheckCircle className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+          {entry.status === 'efetivado' ? 'Efetivado' : entry.status === 'pendente' ? 'Pendente' : 'Cancelado'}
+        </span>
+      </div>
+      <div className="w-16 text-center flex-shrink-0">
+        {!isSystemEntry ? (
+          <div className="flex items-center justify-center gap-2">
+            <button onClick={() => onEdit(entry)} className="text-blue-600 hover:text-blue-900 transition-colors" title="Editar">
+              <Edit2 className="h-4 w-4" />
+            </button>
+            <button onClick={() => onDelete(entry.id)} className="text-red-600 hover:text-red-900 transition-colors" title="Excluir">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          <span className="text-xs text-gray-500" title="Criado automaticamente pelo sistema">
+            <FileText className="h-4 w-4 inline" />
+          </span>
+        )}
+      </div>
+    </div>
+  );
+});
 
 export default function EngineeringFinanceManager({
   initialStartDate = '',
@@ -157,6 +231,13 @@ export default function EngineeringFinanceManager({
     { value: 'boleto', label: 'Boleto' },
   ];
 
+  // [DEBOUNCE] Prevent rapid-fire loadData on quick date changes
+  const debouncedStartDate = useAdvancedDebounce(startDate, { delay: 350, maxWait: 800, cancelCategory: 'eng-finance' });
+  const debouncedEndDate = useAdvancedDebounce(endDate, { delay: 350, maxWait: 800, cancelCategory: 'eng-finance' });
+  const debouncedSearch = useAdvancedDebounce(searchTerm, { delay: 300, maxWait: 700 });
+
+  const isLoadingDataRef = useRef(false);
+
   // Sincronizar datas das props
   useEffect(() => {
     if (initialStartDate) setStartDate(initialStartDate);
@@ -166,7 +247,7 @@ export default function EngineeringFinanceManager({
   useEffect(() => {
     loadData();
     checkPendingPayrolls();
-  }, [startDate, endDate]);
+  }, [debouncedStartDate, debouncedEndDate]);
 
   // Verificar salários pendentes periodicamente
   useEffect(() => {
@@ -181,14 +262,20 @@ export default function EngineeringFinanceManager({
   }, []);
 
   async function loadData() {
+    if (isLoadingDataRef.current) return;
+    isLoadingDataRef.current = true;
     setLoading(true);
-    await Promise.all([
-      loadEntries(),
-      loadProjects(),
-      loadCustomers(),
-      loadExpenseCategories(),
-    ]);
-    setLoading(false);
+    try {
+      await Promise.all([
+        loadEntries(),
+        loadProjects(),
+        loadCustomers(),
+        loadExpenseCategories(),
+      ]);
+    } finally {
+      isLoadingDataRef.current = false;
+      setLoading(false);
+    }
   }
 
   async function checkPendingPayrolls() {
@@ -238,24 +325,30 @@ export default function EngineeringFinanceManager({
   }
 
   async function loadEntries() {
+    const reqKey = createRequestKey('eng-finance', 'load_entries');
+    const controller = registerRequest(reqKey);
     try {
       let query = supabase
         .from('engineering_finance_entries')
-        .select('*')
+        .select('id, entry_type, category, custom_category_id, amount, description, project_id, customer_id, payment_id, advance_id, payroll_schedule_id, payment_method, entry_date, due_date, paid_date, status, notes, created_at')
         .order('entry_date', { ascending: false });
 
-      if (startDate) {
-        query = query.gte('entry_date', startDate);
+      if (debouncedStartDate) {
+        query = query.gte('entry_date', debouncedStartDate);
       }
-      if (endDate) {
-        query = query.lte('entry_date', endDate);
+      if (debouncedEndDate) {
+        query = query.lte('entry_date', debouncedEndDate);
       }
 
       const { data, error } = await query;
+      if (controller.signal.aborted) return;
       if (error) throw error;
       setEntries(data || []);
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
       console.error('Erro ao carregar lançamentos:', error);
+    } finally {
+      unregisterRequest(reqKey);
     }
   }
 
@@ -384,60 +477,15 @@ export default function EngineeringFinanceManager({
     if (error) throw error;
   }
 
-  function handleEdit(entry: FinanceEntry) {
-    setEditingEntry(entry);
-
-    // Determinar categoria correta
-    let categoryValue = entry.category;
-    if (entry.custom_category_id) {
-      categoryValue = `custom_${entry.custom_category_id}`;
-    }
-
-    setFormData({
-      entry_type: entry.entry_type,
-      category: categoryValue,
-      amount: entry.amount.toString(),
-      description: entry.description,
-      project_id: entry.project_id || '',
-      customer_id: entry.customer_id || '',
-      payment_method: entry.payment_method || 'pix',
-      entry_date: entry.entry_date,
-      paid_date: entry.paid_date || entry.entry_date,
-      status: entry.status,
-      notes: entry.notes || '',
-      advance_type: 'taxa',
-    });
-
-    setModalType(entry.entry_type);
-    setShowModal(true);
-  }
-
-  async function handleDelete(id: string) {
-    if (!confirm('Deseja realmente excluir este lançamento?')) return;
-
-    try {
-      const { error } = await supabase
-        .from('engineering_finance_entries')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-      alert('Lançamento excluído com sucesso!');
-      loadData();
-    } catch (error: any) {
-      alert('Erro ao excluir: ' + error.message);
-    }
-  }
-
-  const filteredEntries = entries.filter(entry => {
+  const filteredEntries = useMemo(() => entries.filter(entry => {
     if (filterType !== 'all' && entry.entry_type !== filterType) return false;
     if (filterCategory !== 'all' && entry.category !== filterCategory) return false;
     if (filterStatus !== 'all' && entry.status !== filterStatus) return false;
-    if (searchTerm && !entry.description.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+    if (debouncedSearch && !entry.description.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
     return true;
-  });
+  }), [entries, filterType, filterCategory, filterStatus, debouncedSearch]);
 
-  function getCategoryLabel(entry: FinanceEntry): string {
+  const getCategoryLabel = useCallback(function getCategoryLabel(entry: FinanceEntry): string {
     // Se tem categoria customizada, buscar o nome
     if (entry.custom_category_id) {
       const customCat = expenseCategories.find(c => c.id === entry.custom_category_id);
@@ -456,14 +504,53 @@ export default function EngineeringFinanceManager({
     };
 
     return categoryMap[entry.category] || entry.category;
-  }
+  }, [expenseCategories]);
 
-  function formatCurrency(value: number): string {
+  const formatCurrency = useCallback(function formatCurrency(value: number): string {
     return new Intl.NumberFormat('pt-BR', {
       style: 'currency',
       currency: 'BRL',
     }).format(value);
-  }
+  }, []);
+
+  const handleEditCallback = useCallback((entry: FinanceEntry) => {
+    setEditingEntry(entry);
+    let categoryValue = entry.category;
+    if (entry.custom_category_id) {
+      categoryValue = `custom_${entry.custom_category_id}`;
+    }
+    setFormData({
+      entry_type: entry.entry_type,
+      category: categoryValue,
+      amount: entry.amount.toString(),
+      description: entry.description,
+      project_id: entry.project_id || '',
+      customer_id: entry.customer_id || '',
+      payment_method: entry.payment_method || 'pix',
+      entry_date: entry.entry_date,
+      paid_date: entry.paid_date || entry.entry_date,
+      status: entry.status,
+      notes: entry.notes || '',
+      advance_type: 'taxa',
+    });
+    setModalType(entry.entry_type);
+    setShowModal(true);
+  }, []);
+
+  const handleDeleteCallback = useCallback(async (id: string) => {
+    if (!confirm('Deseja realmente excluir este lançamento?')) return;
+    try {
+      const { error } = await supabase
+        .from('engineering_finance_entries')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+      alert('Lançamento excluído com sucesso!');
+      loadData();
+    } catch (error: any) {
+      alert('Erro ao excluir: ' + error.message);
+    }
+  }, []);
 
   if (loading) {
     return (
@@ -585,118 +672,44 @@ export default function EngineeringFinanceManager({
         </div>
 
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Data
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Tipo
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Categoria
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Descrição
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Valor
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Ações
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {filteredEntries.map((entry) => (
-                <tr key={entry.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {format(new Date(entry.entry_date), 'dd/MM/yyyy')}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
-                      entry.entry_type === 'receita'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-red-100 text-red-800'
-                    }`}>
-                      {entry.entry_type === 'receita' ? (
-                        <TrendingUp className="h-3 w-3" />
-                      ) : (
-                        <TrendingDown className="h-3 w-3" />
-                      )}
-                      {entry.entry_type === 'receita' ? 'Receita' : 'Despesa'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                    {getCategoryLabel(entry)}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-900">
-                    {entry.description}
-                    {entry.notes && (
-                      <p className="text-xs text-gray-500 mt-1">{entry.notes}</p>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-medium">
-                    <span className={entry.entry_type === 'receita' ? 'text-green-600' : 'text-red-600'}>
-                      {entry.entry_type === 'despesa' && '-'}
-                      {formatCurrency(entry.amount)}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-center">
-                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
-                      entry.status === 'efetivado'
-                        ? 'bg-blue-100 text-blue-800'
-                        : entry.status === 'pendente'
-                        ? 'bg-yellow-100 text-yellow-800'
-                        : 'bg-gray-100 text-gray-800'
-                    }`}>
-                      {entry.status === 'efetivado' ? (
-                        <CheckCircle className="h-3 w-3" />
-                      ) : (
-                        <AlertCircle className="h-3 w-3" />
-                      )}
-                      {entry.status === 'efetivado' ? 'Efetivado' : entry.status === 'pendente' ? 'Pendente' : 'Cancelado'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-center text-sm">
-                    {!entry.payment_id && !entry.advance_id && !entry.payroll_schedule_id ? (
-                      <div className="flex items-center justify-center gap-2">
-                        <button
-                          onClick={() => handleEdit(entry)}
-                          className="text-blue-600 hover:text-blue-900 transition-colors"
-                          title="Editar"
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(entry.id)}
-                          className="text-red-600 hover:text-red-900 transition-colors"
-                          title="Excluir"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-gray-500" title="Criado automaticamente pelo sistema">
-                        <FileText className="h-4 w-4 inline" />
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          {filteredEntries.length === 0 && (
-            <div className="text-center py-12">
-              <FileText className="mx-auto h-12 w-12 text-gray-400" />
-              <p className="mt-2 text-sm text-gray-600">Nenhum lançamento encontrado</p>
+          <div className="min-w-full">
+            <div className="bg-gray-50 border-b border-gray-200">
+              <div className="flex items-center px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider gap-3">
+                <div className="w-24 flex-shrink-0">Data</div>
+                <div className="w-24 flex-shrink-0">Tipo</div>
+                <div className="w-36 flex-shrink-0">Categoria</div>
+                <div className="flex-1 min-w-0">Descrição</div>
+                <div className="w-32 text-right flex-shrink-0">Valor</div>
+                <div className="w-24 text-center flex-shrink-0">Status</div>
+                <div className="w-16 text-center flex-shrink-0">Ações</div>
+              </div>
             </div>
-          )}
+            {filteredEntries.length === 0 ? (
+              <div className="text-center py-12">
+                <FileText className="mx-auto h-12 w-12 text-gray-400" />
+                <p className="mt-2 text-sm text-gray-600">Nenhum lançamento encontrado</p>
+              </div>
+            ) : (
+              <VirtualizedListAdvanced
+                items={filteredEntries}
+                height={Math.min(filteredEntries.length * ENTRY_ITEM_HEIGHT, MAX_LIST_HEIGHT)}
+                itemHeight={ENTRY_ITEM_HEIGHT}
+                threshold={15}
+                renderItem={(entry, _index, style) => (
+                  <FinanceEntryRow
+                    key={entry.id}
+                    entry={entry}
+                    style={style}
+                    getCategoryLabel={getCategoryLabel}
+                    formatCurrency={formatCurrency}
+                    onEdit={handleEditCallback}
+                    onDelete={handleDeleteCallback}
+                  />
+                )}
+                emptyMessage="Nenhum lançamento encontrado"
+              />
+            )}
+          </div>
         </div>
       </div>
 

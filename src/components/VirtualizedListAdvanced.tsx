@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { FixedSizeList as List } from 'react-window';
-import InfiniteLoader from 'react-window-infinite-loader';
 import { Loader2 } from 'lucide-react';
 
 interface VirtualizedListAdvancedProps<T> {
@@ -33,7 +32,29 @@ export default function VirtualizedListAdvanced<T>({
   const listRef = useRef<List>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Se lista pequena, renderizar normalmente
+  const itemCount = hasNextPage ? items.length + 1 : items.length;
+
+  const handleItemsRendered = useCallback(async ({
+    visibleStopIndex,
+  }: {
+    overscanStartIndex: number;
+    overscanStopIndex: number;
+    visibleStartIndex: number;
+    visibleStopIndex: number;
+  }) => {
+    if (!hasNextPage || !loadNextPage || isLoading || isNextPageLoading) return;
+    if (visibleStopIndex >= items.length - 5) {
+      setIsLoading(true);
+      try {
+        await loadNextPage();
+      } catch (error) {
+        console.error('Erro ao carregar mais itens:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  }, [hasNextPage, loadNextPage, isLoading, isNextPageLoading, items.length]);
+
   if (items.length < threshold) {
     if (items.length === 0) {
       return (
@@ -54,29 +75,8 @@ export default function VirtualizedListAdvanced<T>({
     );
   }
 
-  // Determinar se item está carregado
-  const isItemLoaded = (index: number) => !hasNextPage || index < items.length;
-
-  // Total de itens (incluindo placeholder para próxima página)
-  const itemCount = hasNextPage ? items.length + 1 : items.length;
-
-  // Carregar mais itens quando chegar perto do fim
-  const loadMoreItems = useCallback(async (startIndex: number, stopIndex: number) => {
-    if (isNextPageLoading || !loadNextPage || isLoading) return;
-
-    setIsLoading(true);
-    try {
-      await loadNextPage();
-    } catch (error) {
-      console.error('Erro ao carregar mais itens:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [isNextPageLoading, loadNextPage, isLoading]);
-
-  // Renderizar cada linha
   const Row = ({ index, style }: { index: number; style: React.CSSProperties }) => {
-    if (!isItemLoaded(index)) {
+    if (index >= items.length) {
       return (
         <div style={style} className="flex items-center justify-center p-4">
           <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
@@ -88,55 +88,24 @@ export default function VirtualizedListAdvanced<T>({
     const item = items[index];
     if (!item) return null;
 
-    return renderItem(item, index, style);
+    return <>{renderItem(item, index, style)}</>;
   };
 
-  if (loadNextPage && hasNextPage) {
-    // Com infinite scroll
-    return (
-      <InfiniteLoader
-        isItemLoaded={isItemLoaded}
-        itemCount={itemCount}
-        loadMoreItems={loadMoreItems}
-      >
-        {({ onItemsRendered, ref }) => (
-          <List
-            ref={(list) => {
-              ref(list);
-              if (list) {
-                (listRef as any).current = list;
-              }
-            }}
-            height={height}
-            itemCount={itemCount}
-            itemSize={itemHeight}
-            width="100%"
-            className={className}
-            onItemsRendered={onItemsRendered}
-          >
-            {Row}
-          </List>
-        )}
-      </InfiniteLoader>
-    );
-  }
-
-  // Sem infinite scroll
   return (
     <List
       ref={listRef}
       height={height}
-      itemCount={items.length}
+      itemCount={itemCount}
       itemSize={itemHeight}
       width="100%"
       className={className}
+      onItemsRendered={handleItemsRendered}
     >
       {Row}
     </List>
   );
 }
 
-// Hook personalizado para gerenciar paginação
 export function useVirtualizedPagination<T>(
   fetchFunction: (offset: number, limit: number) => Promise<T[]>,
   pageSize: number = 50
@@ -196,8 +165,7 @@ export function useVirtualizedPagination<T>(
   };
 }
 
-// Hook para calcular altura dinâmica do container
 export function useVirtualizedHeight(maxHeight: number = 600, itemHeight: number = 60, itemCount: number = 0) {
   const calculatedHeight = Math.min(itemCount * itemHeight, maxHeight);
-  return Math.max(calculatedHeight, 200); // Mínimo 200px
+  return Math.max(calculatedHeight, 200);
 }
