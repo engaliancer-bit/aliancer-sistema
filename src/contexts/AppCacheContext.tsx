@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useRef, useCallback, useEffect, useMemo } from 'react';
 
-interface CacheEntry<T = unknown> {
-  data: T;
+interface CacheEntry {
+  data: unknown;
   timestamp: number;
   loading: boolean;
 }
@@ -22,13 +22,10 @@ const MAX_AGE_MS = 30 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
 
 export function AppCacheProvider({ children }: { children: React.ReactNode }) {
-  }
   const store = useRef<Map<string, CacheEntry>>(new Map());
 
   const evictOldest = useCallback(() => {
-    const sorted = Array.from(store.current.entries()).sort(
-      (a, b) => a[1].timestamp - b[1].timestamp
-    );
+    const sorted = Array.from(store.current.entries()).sort((a, b) => a[1].timestamp - b[1].timestamp);
     sorted.slice(0, 20).forEach(([k]) => store.current.delete(k));
   }, []);
 
@@ -48,9 +45,7 @@ export function AppCacheProvider({ children }: { children: React.ReactNode }) {
   }, [evictOldest]);
 
   const clearCache = useCallback((key?: string) => {
-    if (key !== undefined) {
-      store.current.delete(key);
-    }
+    if (key !== undefined) store.current.delete(key);
   }, []);
 
   const clearAllCache = useCallback(() => {
@@ -93,8 +88,6 @@ export function AppCacheProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useAppCache(): AppCacheContextType {
-  }
-  )
   const ctx = useContext(AppCacheContext);
   if (!ctx) throw new Error('useAppCache must be used within AppCacheProvider');
   return ctx;
