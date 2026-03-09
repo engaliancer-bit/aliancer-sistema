@@ -7,6 +7,7 @@ import InvoicePurchaseModal, { type InvoicePurchaseData } from './InvoicePurchas
 import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
 import { registerRequest, unregisterRequest, createRequestKey } from '../lib/requestCancellation';
 import VirtualizedListAdvanced, { useVirtualizedHeight } from './VirtualizedListAdvanced';
+import { recordMetric, incrementRenderCount, METRIC } from '../lib/performanceMonitor';
 
 const STOCK_ITEM_HEIGHT = 56;
 const MOVEMENT_ITEM_HEIGHT = 60;
@@ -139,6 +140,8 @@ const MovementRow = memo(function MovementRow({ movement, style, onEdit, onDelet
 });
 
 export default function MaterialInventory() {
+  incrementRenderCount('MaterialInventory');
+
   const [materials, setMaterials] = useState<Material[]>([]);
   const [inventory, setInventory] = useState<MaterialInventoryItem[]>([]);
   const [movements, setMovements] = useState<MaterialMovement[]>([]);
@@ -146,6 +149,8 @@ export default function MaterialInventory() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<'stock' | 'history'>('stock');
+
+  const _initialRenderRef = useRef(false);
 
   const [formData, setFormData] = useState({
     material_id: '',
@@ -170,7 +175,15 @@ export default function MaterialInventory() {
   const debouncedSearch = useAdvancedDebounce(searchTerm, { delay: 300, maxWait: 700 });
 
   useEffect(() => {
-    loadData();
+    if (!_initialRenderRef.current) {
+      _initialRenderRef.current = true;
+      const t0 = performance.now();
+      loadData().then(() => {
+        recordMetric(METRIC.MATERIALS_INITIAL_RENDER, performance.now() - t0);
+      });
+    } else {
+      loadData();
+    }
     loadCompanySettings();
     loadSuppliers();
   }, []);
@@ -206,6 +219,7 @@ export default function MaterialInventory() {
   };
 
   const loadData = async () => {
+    const t0 = performance.now();
     try {
       const [materialsRes] = await Promise.all([
         supabase
@@ -216,9 +230,11 @@ export default function MaterialInventory() {
 
       if (materialsRes.error) throw materialsRes.error;
       setMaterials(materialsRes.data || []);
+      recordMetric(METRIC.MATERIALS_LIST_LOAD, performance.now() - t0, 'ms', { phase: 'materials' });
 
       // Load movements first page
       movementsOffsetRef.current = 0;
+      const tMovs = performance.now();
       const movsRes = await supabase
         .from('material_movements')
         .select('id, material_id, quantity, movement_type, notes, movement_date, created_at, materials(name)')
@@ -226,6 +242,7 @@ export default function MaterialInventory() {
         .range(0, MOVEMENTS_PAGE_SIZE - 1);
 
       if (!movsRes.error) {
+        recordMetric(METRIC.MATERIALS_MOVEMENTS_LOAD, performance.now() - tMovs);
         setMovements(movsRes.data || []);
         setHasMoreMovements((movsRes.data || []).length === MOVEMENTS_PAGE_SIZE);
         movementsOffsetRef.current = MOVEMENTS_PAGE_SIZE;
@@ -247,6 +264,7 @@ export default function MaterialInventory() {
 
     const reqKey = createRequestKey('inventory', 'movements_page', { offset: movementsOffsetRef.current });
     const controller = registerRequest(reqKey);
+    const t0 = performance.now();
 
     try {
       const { data, error } = await supabase
@@ -258,6 +276,7 @@ export default function MaterialInventory() {
       if (controller.signal.aborted) return;
       if (error) throw error;
 
+      recordMetric(METRIC.MATERIALS_MOVEMENTS_LOAD, performance.now() - t0, 'ms', { phase: 'more' });
       setMovements(prev => [...prev, ...(data || [])]);
       setHasMoreMovements((data || []).length === MOVEMENTS_PAGE_SIZE);
       movementsOffsetRef.current += MOVEMENTS_PAGE_SIZE;
@@ -575,9 +594,12 @@ export default function MaterialInventory() {
 
   // Memoized filters
   const filteredInventory = useMemo(() => {
-    if (!debouncedSearch) return inventory;
-    const lower = debouncedSearch.toLowerCase();
-    return inventory.filter(item => item.material_name.toLowerCase().includes(lower));
+    const t0 = performance.now();
+    const result = !debouncedSearch
+      ? inventory
+      : inventory.filter(item => item.material_name.toLowerCase().includes(debouncedSearch.toLowerCase()));
+    recordMetric(METRIC.MATERIALS_FILTER_APPLY, performance.now() - t0);
+    return result;
   }, [inventory, debouncedSearch]);
 
   const totalInventoryValue = useMemo(

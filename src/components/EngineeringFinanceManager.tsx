@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
 import { registerRequest, unregisterRequest, createRequestKey } from '../lib/requestCancellation';
 import VirtualizedListAdvanced, { useVirtualizedHeight } from './VirtualizedListAdvanced';
+import { recordMetric, incrementRenderCount, METRIC } from '../lib/performanceMonitor';
 import {
   DollarSign,
   TrendingUp,
@@ -155,6 +156,8 @@ export default function EngineeringFinanceManager({
   initialStartDate = '',
   initialEndDate = '',
 }: EngineeringFinanceManagerProps) {
+  incrementRenderCount('EngineeringFinanceManager');
+
   const [entries, setEntries] = useState<FinanceEntry[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -265,6 +268,7 @@ export default function EngineeringFinanceManager({
     if (isLoadingDataRef.current) return;
     isLoadingDataRef.current = true;
     setLoading(true);
+    const t0 = performance.now();
     try {
       await Promise.all([
         loadEntries(),
@@ -272,6 +276,7 @@ export default function EngineeringFinanceManager({
         loadCustomers(),
         loadExpenseCategories(),
       ]);
+      recordMetric(METRIC.ENG_FINANCE_LOAD, performance.now() - t0);
     } finally {
       isLoadingDataRef.current = false;
       setLoading(false);
@@ -327,6 +332,7 @@ export default function EngineeringFinanceManager({
   async function loadEntries() {
     const reqKey = createRequestKey('eng-finance', 'load_entries');
     const controller = registerRequest(reqKey);
+    const t0 = performance.now();
     try {
       let query = supabase
         .from('engineering_finance_entries')
@@ -343,6 +349,7 @@ export default function EngineeringFinanceManager({
       const { data, error } = await query;
       if (controller.signal.aborted) return;
       if (error) throw error;
+      recordMetric(METRIC.ENG_FINANCE_ENTRIES_LOAD, performance.now() - t0);
       setEntries(data || []);
     } catch (error: any) {
       if (error?.name === 'AbortError') return;
@@ -477,13 +484,18 @@ export default function EngineeringFinanceManager({
     if (error) throw error;
   }
 
-  const filteredEntries = useMemo(() => entries.filter(entry => {
-    if (filterType !== 'all' && entry.entry_type !== filterType) return false;
-    if (filterCategory !== 'all' && entry.category !== filterCategory) return false;
-    if (filterStatus !== 'all' && entry.status !== filterStatus) return false;
-    if (debouncedSearch && !entry.description.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
-    return true;
-  }), [entries, filterType, filterCategory, filterStatus, debouncedSearch]);
+  const filteredEntries = useMemo(() => {
+    const t0 = performance.now();
+    const result = entries.filter(entry => {
+      if (filterType !== 'all' && entry.entry_type !== filterType) return false;
+      if (filterCategory !== 'all' && entry.category !== filterCategory) return false;
+      if (filterStatus !== 'all' && entry.status !== filterStatus) return false;
+      if (debouncedSearch && !entry.description.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
+      return true;
+    });
+    recordMetric(METRIC.ENG_FINANCE_FILTER_APPLY, performance.now() - t0);
+    return result;
+  }, [entries, filterType, filterCategory, filterStatus, debouncedSearch]);
 
   const getCategoryLabel = useCallback(function getCategoryLabel(entry: FinanceEntry): string {
     // Se tem categoria customizada, buscar o nome

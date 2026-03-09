@@ -11,6 +11,7 @@ import SupabaseConnectionMonitor from './components/SupabaseConnectionMonitor';
 import MemoryLeakMonitor from './components/MemoryLeakMonitor';
 import AuthDiagnostics from './components/AuthDiagnostics';
 import CriticalPerformanceMonitor from './components/CriticalPerformanceMonitor';
+import DiagnosticsPanel from './components/DiagnosticsPanel';
 import { globalMemoryCleanup } from './lib/memoryCleanup';
 
 const Products = lazy(() => import('./components/Products'));
@@ -165,6 +166,7 @@ function App() {
     };
   }, []);
 
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [mainTab, setMainTab] = useState<MainTab | null>(null);
   const [factoryTab, setFactoryTab] = useState<FactoryTab | null>(null);
   const [engineeringTab, setEngineeringTab] = useState<EngineeringTab | null>(null);
@@ -321,6 +323,17 @@ function App() {
       : mainTabs,
     [hasSharedModules]
   );
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setShowDiagnostics(d => !d);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const handleBackToMain = useCallback(() => {
     setFactoryTab(null);
@@ -782,6 +795,14 @@ function App() {
           <AuthDiagnostics />
         </>
       )}
+      <button
+        onClick={() => setShowDiagnostics(true)}
+        className="fixed bottom-4 left-4 z-50 bg-gray-800 text-white p-2 rounded-full shadow-lg opacity-20 hover:opacity-100 transition-opacity"
+        title="Diagnóstico de Performance (Ctrl+Shift+D)"
+      >
+        <Activity className="w-5 h-5" />
+      </button>
+      {showDiagnostics && <DiagnosticsPanel onClose={() => setShowDiagnostics(false)} />}
     </>
   );
 }

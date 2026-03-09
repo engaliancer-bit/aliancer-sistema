@@ -5,7 +5,7 @@ import { useNormalizedRefTable } from '../hooks/useNormalizedRefTable';
 // [DEBOUNCE] Advanced debounce with maxWait prevents search floods
 import { useAdvancedDebounce } from '../hooks/useAdvancedDebounceThrottle';
 // [MONITOR] Performance tracking for receitas/despesas operations
-import { measureAsync, recordMetric } from '../lib/performanceMonitor';
+import { measureAsync, recordMetric, incrementRenderCount, recordRealtimeEvent, METRIC } from '../lib/performanceMonitor';
 // [CANCEL] Cancel in-flight queries when filters change
 import { cancelRequestsByCategory, registerRequest, unregisterRequest, createRequestKey } from '../lib/requestCancellation';
 import {
@@ -255,6 +255,8 @@ export default function FactoryFinanceManager({
   initialStartDate = '',
   initialEndDate = '',
 }: FactoryFinanceManagerProps) {
+  incrementRenderCount('FactoryFinanceManager');
+
   const [entries, setEntries] = useState<CashFlowEntry[]>([]);
   const [costCategories, setCostCategories] = useState<CostCategory[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
@@ -319,6 +321,7 @@ export default function FactoryFinanceManager({
     if (isLoadingDataRef.current) return;
     isLoadingDataRef.current = true;
     setLoading(true);
+    const t0 = performance.now();
     try {
       await Promise.all([
         loadEntries(),
@@ -327,6 +330,7 @@ export default function FactoryFinanceManager({
         loadCustomers(),
         loadConstructionWorks(),
       ]);
+      recordMetric(METRIC.FACTORY_FINANCE_LOAD, performance.now() - t0);
     } finally {
       isLoadingDataRef.current = false;
       setLoading(false);
@@ -369,6 +373,9 @@ export default function FactoryFinanceManager({
       unregisterRequest(reqKey);
     }
   }
+
+  // loadEntries already records 'receitas:load_list' via measureAsync above;
+  // the METRIC constant alias is recorded after loadData completes via FACTORY_FINANCE_LOAD.
 
   async function loadCustomers() {
     try {
@@ -522,6 +529,7 @@ export default function FactoryFinanceManager({
     channelName: 'receitas-cash-flow',
     tables: ['cash_flow'],
     onBatchEvents: useCallback((events: RealtimeEvent[]) => {
+      events.forEach(() => recordRealtimeEvent(METRIC.FACTORY_FINANCE_REALTIME));
       const insertIds: string[] = [];
 
       setEntries((prev) => {
@@ -735,6 +743,7 @@ export default function FactoryFinanceManager({
     });
     // [MONITOR] Track filter application duration
     recordMetric('receitas:apply_filter', performance.now() - start, 'ms', { total: String(result.length) });
+    recordMetric(METRIC.FACTORY_FINANCE_FILTER_APPLY, performance.now() - start);
     return result;
   }, [entries, filterType, filterCategory, debouncedSearchTerm, filterPaymentStatus]);
 
