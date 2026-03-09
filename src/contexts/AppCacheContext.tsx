@@ -22,7 +22,6 @@ const MAX_AGE_MS = 30 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
 
 export function AppCacheProvider({ children }: { children: React.ReactNode }) {
-  }
   const store = useRef<Map<string, CacheEntry>>(new Map());
 
   const evictOldest = useCallback(() => {
@@ -89,8 +88,6 @@ export function AppCacheProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useAppCache(): AppCacheContextType {
-  }
-  )
   const ctx = useContext(AppCacheContext);
   if (!ctx) throw new Error('useAppCache must be used within AppCacheProvider');
   return ctx;
