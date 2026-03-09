@@ -23,6 +23,7 @@ const MAX_ENTRIES = 100;
 const EVICT_COUNT = 20;
 
 export function AppCacheProvider({ children }: { children: React.ReactNode }) {
+  }
   const cacheRef = useRef<Map<string, CachedData<any>>>(new Map());
 
   const evictOldest = useCallback(() => {
@@ -116,6 +117,8 @@ export function AppCacheProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useAppCache() {
+  }
+  )
   const context = useContext(AppCacheContext);
   if (!context) {
     throw new Error('useAppCache must be used within AppCacheProvider');
