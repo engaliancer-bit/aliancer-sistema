@@ -18,6 +18,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const subscriptionRef = useRef<{ unsubscribe: () => void } | null>(null);
+  const subscribedRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -25,7 +26,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (subscriptionRef.current) {
       subscriptionRef.current.unsubscribe();
       subscriptionRef.current = null;
+      subscribedRef.current = false;
     }
+
+    if (subscribedRef.current) return;
+    subscribedRef.current = true;
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, currentSession) => {
+        if (!mounted) return;
+
+        if (import.meta.env.DEV) {
+          console.log('[AuthContext] Auth state changed:', {
+            event,
+            hasSession: !!currentSession,
+            userId: currentSession?.user?.id,
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        if (event === 'SIGNED_OUT') {
+          setSession(null);
+          setUser(null);
+        } else {
+          setSession(currentSession);
+          setUser(currentSession?.user ?? null);
+        }
+
+        setLoading(false);
+
+        if (import.meta.env.DEV) {
+          if (event === 'SIGNED_IN') console.log('[AuthContext] User signed in successfully');
+          if (event === 'TOKEN_REFRESHED') console.log('[AuthContext] Token refreshed successfully');
+        }
+      }
+    );
+
+    subscriptionRef.current = subscription;
 
     const initializeAuth = async () => {
       try {
@@ -54,51 +91,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     initializeAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, currentSession) => {
-        if (!mounted) return;
-
-        if (import.meta.env.DEV) {
-          console.log('[AuthContext] Auth state changed:', {
-            event,
-            hasSession: !!currentSession,
-            userId: currentSession?.user?.id,
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        setSession(currentSession);
-        setUser(currentSession?.user ?? null);
-        setLoading(false);
-
-        if (event === 'SIGNED_IN') {
-          if (import.meta.env.DEV) {
-            console.log('[AuthContext] User signed in successfully');
-          }
-        }
-
-        if (event === 'SIGNED_OUT') {
-          if (import.meta.env.DEV) {
-            console.log('[AuthContext] User signed out');
-          }
-          setSession(null);
-          setUser(null);
-        }
-
-        if (event === 'TOKEN_REFRESHED') {
-          if (import.meta.env.DEV) {
-            console.log('[AuthContext] Token refreshed successfully');
-          }
-        }
-      }
-    );
-
-    subscriptionRef.current = subscription;
-
     return () => {
       mounted = false;
       subscription.unsubscribe();
       subscriptionRef.current = null;
+      subscribedRef.current = false;
     };
   }, []);
 
