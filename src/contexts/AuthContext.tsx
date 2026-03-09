@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 
@@ -17,52 +17,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
-  const subscriptionRef = useRef<{ unsubscribe: () => void } | null>(null);
-  const subscribedRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
-
-    if (subscriptionRef.current) {
-      subscriptionRef.current.unsubscribe();
-      subscriptionRef.current = null;
-      subscribedRef.current = false;
-    }
-
-    if (subscribedRef.current) return;
-    subscribedRef.current = true;
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, currentSession) => {
-        if (!mounted) return;
-
-        if (import.meta.env.DEV) {
-          console.log('[AuthContext] Auth state changed:', {
-            event,
-            hasSession: !!currentSession,
-            userId: currentSession?.user?.id,
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        if (event === 'SIGNED_OUT') {
-          setSession(null);
-          setUser(null);
-        } else {
-          setSession(currentSession);
-          setUser(currentSession?.user ?? null);
-        }
-
-        setLoading(false);
-
-        if (import.meta.env.DEV) {
-          if (event === 'SIGNED_IN') console.log('[AuthContext] User signed in successfully');
-          if (event === 'TOKEN_REFRESHED') console.log('[AuthContext] Token refreshed successfully');
-        }
-      }
-    );
-
-    subscriptionRef.current = subscription;
 
     const initializeAuth = async () => {
       try {
@@ -91,11 +48,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     initializeAuth();
 
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, currentSession) => {
+        if (import.meta.env.DEV) {
+          console.log('[AuthContext] Auth state changed:', {
+            event,
+            hasSession: !!currentSession,
+            userId: currentSession?.user?.id,
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        if (mounted) {
+          setSession(currentSession);
+          setUser(currentSession?.user ?? null);
+          setLoading(false);
+        }
+
+        if (event === 'SIGNED_IN') {
+          if (import.meta.env.DEV) {
+            console.log('[AuthContext] User signed in successfully');
+          }
+        }
+
+        if (event === 'SIGNED_OUT') {
+          if (import.meta.env.DEV) {
+            console.log('[AuthContext] User signed out');
+          }
+          if (mounted) {
+            setSession(null);
+            setUser(null);
+          }
+        }
+
+        if (event === 'TOKEN_REFRESHED') {
+          if (import.meta.env.DEV) {
+            console.log('[AuthContext] Token refreshed successfully');
+          }
+        }
+      }
+    );
+
     return () => {
       mounted = false;
       subscription.unsubscribe();
-      subscriptionRef.current = null;
-      subscribedRef.current = false;
     };
   }, []);
 
