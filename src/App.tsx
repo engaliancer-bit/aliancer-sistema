@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from 'react';
-import { Package, ClipboardList, Package2, Droplet, BookOpen, Building2, Users, DollarSign, BarChart3, Target, Tag, Home, UserPlus, FileText, Clipboard, AlertTriangle, Layers, Activity, Briefcase, HardHat, MapPin, Settings, Share2, Box, Calculator, Truck, Calendar, FileSpreadsheet } from 'lucide-react';
+import { Package, ClipboardList, Package2, Droplet, BookOpen, Building2, Users, DollarSign, BarChart3, Target, Tag, Home, UserPlus, FileText, Clipboard, AlertTriangle, Layers, Activity, Briefcase, HardHat, MapPin, Settings, Share2, Box, Calculator, Truck, Calendar, FileSpreadsheet, MessageSquare } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import LoadingFallback from './components/LoadingFallback';
 import PWAInstallPrompt from './components/PWAInstallPrompt';
@@ -51,9 +51,10 @@ const ModuleSharing = lazy(() => import('./components/ModuleSharing'));
 const ClientPortal = lazy(() => import('./components/ClientPortal'));
 const UnifiedSales = lazy(() => import('./components/UnifiedSales'));
 const CustomerStatement = lazy(() => import('./components/CustomerStatement'));
+const EngineeringMeetings = lazy(() => import('./components/EngineeringMeetings'));
 type MainTab = 'factory' | 'engineering' | 'construction' | 'sales' | 'settings' | 'sharing';
 type FactoryTab = 'products' | 'molds' | 'production' | 'inventory' | 'materials' | 'material-inventory' | 'recipes' | 'suppliers' | 'employees' | 'indirect-costs' | 'sales-report' | 'dashboard' | 'sales-prices' | 'customers' | 'quotes' | 'production-orders' | 'production-pending' | 'compositions' | 'ribbed-slab-quote' | 'stage-tracker' | 'cashflow' | 'deliveries';
-type EngineeringTab = 'eng-customers' | 'eng-properties' | 'eng-projects' | 'eng-services' | 'eng-employees' | 'eng-ai-docs' | 'eng-finance';
+type EngineeringTab = 'eng-customers' | 'eng-properties' | 'eng-projects' | 'eng-services' | 'eng-employees' | 'eng-ai-docs' | 'eng-finance' | 'eng-meetings';
 type ConstructionTab = 'const-customers' | 'const-projects' | 'const-finance' | 'const-budgets';
 
 const mainTabs = [
@@ -95,6 +96,7 @@ const engineeringTabs = [
   { id: 'eng-properties' as EngineeringTab, label: 'Imóveis', icon: MapPin },
   { id: 'eng-projects' as EngineeringTab, label: 'Projetos', icon: Briefcase },
   { id: 'eng-finance' as EngineeringTab, label: 'Receitas/Despesas', icon: DollarSign },
+  { id: 'eng-meetings' as EngineeringTab, label: 'Reuniões', icon: MessageSquare },
   { id: 'eng-services' as EngineeringTab, label: 'Projetos (Templates)', icon: Clipboard },
   { id: 'eng-employees' as EngineeringTab, label: 'Colaboradores', icon: Users },
   { id: 'eng-ai-docs' as EngineeringTab, label: 'Documentos IA', icon: FileText },
@@ -555,6 +557,7 @@ function App() {
                   'eng-services': 'EngineeringServices',
                   'eng-employees': 'EngineeringEmployees',
                   'eng-ai-docs': 'AIDocumentGenerator',
+                  'eng-meetings': 'EngineeringMeetings',
                 };
                 return (
                   <button
@@ -743,6 +746,7 @@ function App() {
                 {engineeringTab === 'eng-properties' && <Properties />}
                 {engineeringTab === 'eng-projects' && <EngineeringProjectsManager />}
                 {engineeringTab === 'eng-finance' && <EngineeringFinance />}
+                {engineeringTab === 'eng-meetings' && <EngineeringMeetings />}
                 {engineeringTab === 'eng-services' && <EngineeringServices />}
                 {engineeringTab === 'eng-employees' && <EngineeringEmployees />}
                 {engineeringTab === 'eng-ai-docs' && <AIDocumentGenerator />}
