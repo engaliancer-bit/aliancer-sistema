@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import type { Meeting, MeetingDetail, CreateMeetingData } from '../types/meetings';
+import type { Meeting, MeetingDetail, MeetingTask, CreateMeetingData } from '../types/meetings';
 
 export async function getMeetings(): Promise<Meeting[]> {
   const { data, error } = await supabase
@@ -47,4 +47,44 @@ export async function createMeeting(data: CreateMeetingData): Promise<Meeting> {
 
   if (error) throw error;
   return created;
+}
+
+export async function processMeetingWithAI(meetingId: string): Promise<{ success: boolean; error?: string }> {
+  const { data, error } = await supabase.functions.invoke('process-meeting-import', {
+    body: { meeting_id: meetingId },
+  });
+
+  if (error) {
+    return { success: false, error: error.message ?? 'Erro ao chamar a função de IA' };
+  }
+
+  if (data && data.success === false) {
+    return { success: false, error: data.error ?? 'Falha no processamento' };
+  }
+
+  return { success: true };
+}
+
+export async function updateMeetingTask(
+  taskId: string,
+  data: Partial<Pick<MeetingTask, 'responsible_name' | 'due_date' | 'status' | 'priority' | 'description' | 'category'>>,
+): Promise<MeetingTask> {
+  const { data: updated, error } = await supabase
+    .from('meeting_tasks')
+    .update(data)
+    .eq('id', taskId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return updated;
+}
+
+export async function updateMeetingStatus(meetingId: string, status: string): Promise<void> {
+  const { error } = await supabase
+    .from('meetings')
+    .update({ status })
+    .eq('id', meetingId);
+
+  if (error) throw error;
 }
