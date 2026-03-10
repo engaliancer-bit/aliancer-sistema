@@ -11,7 +11,7 @@ interface Props {
 
 interface Material { id: string; name: string; unit: string; resale_price: number | null; unit_cost: number | null; }
 interface Product  { id: string; name: string; unit: string; sale_price: number; final_sale_price: number | null; }
-interface Comp     { id: string; code: string; name: string; unit: string; description: string | null; }
+interface Comp     { id: string; name: string; description: string | null; total_cost: number | null; }
 
 const ITEM_TYPE_CONFIG: Record<ItemType, { label: string; color: string; bg: string; icon: React.ComponentType<any> }> = {
   composicao: { label: 'Composicao', color: 'text-blue-700',   bg: 'bg-blue-100',   icon: Layers },
@@ -62,10 +62,10 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
         .select('id,name,unit,sale_price,final_sale_price')
         .order('name')
         .limit(500),
-      supabase.from('budget_compositions')
-        .select('id,code,name,unit,description')
-        .limit(500)
-        .order('code'),
+      supabase.from('compositions')
+        .select('id,name,description,total_cost')
+        .order('name')
+        .limit(500),
     ]);
     setItems(itemsRes.data || []);
     setMaterials(matsRes.data || []);
@@ -103,8 +103,13 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
     setMatSearch(p.name);
   };
 
+  const filteredComps = useMemo(() => {
+    if (!matSearch) return compositions.slice(0, 50);
+    return compositions.filter(c => c.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
+  }, [compositions, matSearch]);
+
   const handleSelectComposition = (c: Comp) => {
-    setForm(f => ({ ...f, composition_id: c.id, description: c.name, unit: c.unit }));
+    setForm(f => ({ ...f, composition_id: c.id, description: c.name, unit: 'un', unit_price: c.total_cost ?? 0 }));
     setMatSearch(c.name);
   };
 
@@ -259,11 +264,11 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
                         <span className="text-xs text-gray-400">{fmtBRL(p.final_sale_price ?? p.sale_price ?? 0)}/{p.unit}</span>
                       </button>
                     ))}
-                    {form.item_type === 'composicao' && compositions.map(c => (
+                    {form.item_type === 'composicao' && filteredComps.map(c => (
                       <button key={c.id} onClick={() => handleSelectComposition(c)}
                         className={`w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-orange-50 transition-colors ${form.composition_id === c.id ? 'bg-orange-50 text-orange-700 font-medium' : 'text-gray-700'}`}>
-                        <span><span className="font-mono text-xs text-gray-400 mr-2">{c.code}</span>{c.name}</span>
-                        <span className="text-xs text-gray-400">{c.unit}</span>
+                        <span>{c.name}</span>
+                        <span className="text-xs text-gray-400">{fmtBRL(c.total_cost ?? 0)}</span>
                       </button>
                     ))}
                   </div>
