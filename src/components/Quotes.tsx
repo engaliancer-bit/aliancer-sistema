@@ -279,7 +279,7 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
         supabase.from('customers').select('id, name, person_type').order('name').limit(500),
         supabase.from('products').select('id, name, sale_price, final_sale_price, unit').order('name').limit(500),
         supabase.from('materials').select('id, name, unit, unit_cost, resale_enabled, resale_tax_percentage, resale_margin_percentage, resale_price, package_size').order('name').limit(500),
-        supabase.from('compositions').select('id, name, description, unit_cost').order('name').limit(200),
+        supabase.from('compositions').select('id, name, description, total_cost').order('name').limit(200),
       ]);
 
       if (quotesRes.data) {
