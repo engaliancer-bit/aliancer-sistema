@@ -45,7 +45,7 @@ export default function SupabaseConnectionMonitor() {
   }, []);
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== 'development') return;
+    if (!import.meta.env.DEV) return;
 
     if (!isOpen) {
       if (intervalRef.current) {
@@ -77,7 +77,7 @@ export default function SupabaseConnectionMonitor() {
     updateStats();
   };
 
-  if (process.env.NODE_ENV !== 'development') {
+  if (!import.meta.env.DEV) {
     return null;
   }
 

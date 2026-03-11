@@ -148,7 +148,7 @@ export function withSafeCleanup<P extends object>(
     return (
       <SafeComponentWrapper
         componentName={componentName || Component.displayName || Component.name || 'Component'}
-        enableLogging={process.env.NODE_ENV === 'development'}
+        enableLogging={import.meta.env.DEV}
       >
         <Component {...props} />
       </SafeComponentWrapper>

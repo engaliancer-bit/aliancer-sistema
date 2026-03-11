@@ -69,7 +69,7 @@ export function useSupabaseQuery<T = any>(
 
     const duration = performance.now() - startTime;
 
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       console.log(
         `[Supabase Query] ${table} - ${duration.toFixed(2)}ms - ${data?.length || 0} rows`,
         { pagination, orderBy, filters }
@@ -114,7 +114,7 @@ export function useSupabaseSingleQuery<T = any>(
 
     const duration = performance.now() - startTime;
 
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       console.log(`[Supabase Query] ${table}/${id} - ${duration.toFixed(2)}ms`);
     }
 

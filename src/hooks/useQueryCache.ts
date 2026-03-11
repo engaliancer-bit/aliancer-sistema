@@ -72,7 +72,7 @@ function addMetric(metric: QueryMetrics): void {
     queryMetrics.shift();
   }
 
-  if (process.env.NODE_ENV === 'development' && metric.duration > 1000) {
+  if (import.meta.env.DEV && metric.duration > 1000) {
     console.warn(
       `[Query Performance] Slow query detected: ${metric.queryKey} took ${metric.duration}ms`,
       metric

@@ -17,7 +17,7 @@ export function withMemoryTracking<P extends object>(
     useMemoryTracking(componentName);
 
     // Lifecycle logging
-    useComponentLifecycle(componentName, process.env.NODE_ENV === 'development');
+    useComponentLifecycle(componentName, import.meta.env.DEV);
 
     // Cleanup de subscriptions
     useEffect(() => {

@@ -5,7 +5,7 @@ export function useRenderCount(componentName?: string): number {
 
   useEffect(() => {
     renderCount.current += 1;
-    if (componentName && process.env.NODE_ENV === 'development') {
+    if (componentName && import.meta.env.DEV) {
       console.log(`[${componentName}] Render count: ${renderCount.current}`);
     }
   });
@@ -17,7 +17,7 @@ export function useWhyDidYouUpdate(name: string, props: Record<string, any>) {
   const previousProps = useRef<Record<string, any>>();
 
   useEffect(() => {
-    if (previousProps.current && process.env.NODE_ENV === 'development') {
+    if (previousProps.current && import.meta.env.DEV) {
       const allKeys = Object.keys({ ...previousProps.current, ...props });
       const changedProps: Record<string, { from: any; to: any }> = {};
 
@@ -43,7 +43,7 @@ export function useTraceUpdate(props: Record<string, any>, componentName?: strin
   const prev = useRef(props);
 
   useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       const changedProps = Object.entries(props).reduce((acc, [key, val]) => {
         if (prev.current[key] !== val) {
           acc[key] = {
@@ -70,7 +70,7 @@ export function useRenderTime(componentName: string) {
 
   useEffect(() => {
     const renderTime = performance.now() - startTime.current;
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       console.log(`[${componentName}] Render time: ${renderTime.toFixed(2)}ms`);
     }
     startTime.current = performance.now();

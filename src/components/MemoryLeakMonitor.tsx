@@ -90,7 +90,7 @@ export default function MemoryLeakMonitor() {
   }, [analyzeSnapshots]);
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== 'development') return;
+    if (!import.meta.env.DEV) return;
 
     if (!isOpen) {
       if (intervalRef.current) {
@@ -129,7 +129,7 @@ export default function MemoryLeakMonitor() {
     setStats(null);
   };
 
-  if (process.env.NODE_ENV !== 'development') {
+  if (!import.meta.env.DEV) {
     return null;
   }
 

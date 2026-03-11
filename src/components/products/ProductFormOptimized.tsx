@@ -302,7 +302,7 @@ export default function ProductFormOptimized({ productId, onClose, onSave }: Pro
 
   return (
     <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-md p-6 space-y-4">
-      {process.env.NODE_ENV === 'development' && (
+      {import.meta.env.DEV && (
         <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
           <strong>Performance:</strong> Renders: {metrics.renderCount} | Slow: {metrics.slowRenders} |
           Último render: {metrics.renderTime.toFixed(2)}ms

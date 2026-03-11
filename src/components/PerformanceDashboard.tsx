@@ -26,7 +26,7 @@ export default function PerformanceDashboard() {
   }, []);
 
   // Apenas em desenvolvimento
-  if (process.env.NODE_ENV !== 'development') {
+  if (!import.meta.env.DEV) {
     return null;
   }
 

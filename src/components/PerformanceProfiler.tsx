@@ -45,7 +45,7 @@ export function PerformanceProfiler({
     onRenderCallback(id, phase, actualDuration, baseDuration, startTime, commitTime);
 
     // Log detalhado se estiver em desenvolvimento
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       const emoji = actualDuration < 5 ? '🟢' : actualDuration < 16 ? '🟡' : '🔴';
       console.log(
         `${emoji} [${id}] ${phase} render: ${actualDuration.toFixed(2)}ms (base: ${baseDuration.toFixed(
