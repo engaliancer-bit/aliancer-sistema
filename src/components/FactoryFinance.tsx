@@ -1,4 +1,4 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   DollarSign,
@@ -45,6 +45,14 @@ interface FactoryBalance {
   despesas_outras: number;
 }
 
+interface RawEntry {
+  type: string;
+  amount: number;
+  date: string;
+  category_name: string | null;
+  category_type: string | null;
+}
+
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
@@ -55,12 +63,7 @@ function formatCurrency(value: number): string {
 export default function FactoryFinance() {
   const [activeView, setActiveView] = useState<'manager' | 'charts' | 'reports' | 'customer-statement'>('manager');
   const [loading, setLoading] = useState(true);
-  const [balance, setBalance] = useState<FactoryBalance | null>(null);
-  const [monthlyData, setMonthlyData] = useState<MonthlyData[]>([]);
-  const [categoryData, setCategoryData] = useState<{
-    receitas: CategoryData[];
-    despesas: CategoryData[];
-  }>({ receitas: [], despesas: [] });
+  const [rawEntries, setRawEntries] = useState<RawEntry[]>([]);
 
   const currentDate = new Date();
   const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
@@ -69,179 +72,132 @@ export default function FactoryFinance() {
   const [startDate, setStartDate] = useState(format(firstDayOfMonth, 'yyyy-MM-dd'));
   const [endDate, setEndDate] = useState(format(lastDayOfMonth, 'yyyy-MM-dd'));
 
+  const abortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
-    loadData().catch(err => {
-      console.error('Erro ao carregar dados:', err);
-      setLoading(false);
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    loadData(abortRef.current.signal).catch(err => {
+      if (err?.name !== 'AbortError') console.error('Erro ao carregar dados:', err);
     });
+    return () => { abortRef.current?.abort(); };
   }, [startDate, endDate]);
 
-  async function loadData() {
+  async function loadData(signal?: AbortSignal) {
     setLoading(true);
-    await Promise.all([loadBalance(), loadMonthlyData(), loadCategoryData()]);
-    setLoading(false);
-  }
-
-  async function loadBalance() {
     try {
       const { data, error } = await supabase
         .from('cash_flow')
-        .select('type, amount, cost_categories(name, type)')
+        .select('type, amount, date, cost_categories(name, type)')
         .eq('business_unit', 'factory')
         .gte('date', startDate)
-        .lte('date', endDate);
+        .lte('date', endDate)
+        .abortSignal(signal as AbortSignal);
 
       if (error) throw error;
 
-      const entries = data || [];
+      const entries: RawEntry[] = (data || []).map((e: any) => ({
+        type: e.type,
+        amount: e.amount ?? 0,
+        date: e.date,
+        category_name: e.cost_categories?.name ?? null,
+        category_type: e.cost_categories?.type ?? null,
+      }));
 
-      const total_receitas = entries
-        .filter(e => e.type === 'income')
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-      const total_despesas = entries
-        .filter(e => e.type === 'expense')
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-      const receitas_vendas = entries
-        .filter(e => e.type === 'income' && (e.cost_categories as any)?.type === 'income_sales')
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-      const receitas_servicos = entries
-        .filter(e => e.type === 'income' && (e.cost_categories as any)?.type === 'income_services')
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-      const receitas_outras = total_receitas - receitas_vendas - receitas_servicos;
-
-      const despesas_insumos = entries
-        .filter(e => e.type === 'expense' && ['direct_production', 'direct_resale'].includes((e.cost_categories as any)?.type))
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-      const despesas_pessoal = entries
-        .filter(e => e.type === 'expense' && (e.cost_categories as any)?.type === 'personnel')
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-      const despesas_operacionais = entries
-        .filter(e => e.type === 'expense' && ['transport', 'utilities', 'maintenance'].includes((e.cost_categories as any)?.type))
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-      const despesas_outras = total_despesas - despesas_insumos - despesas_pessoal - despesas_operacionais;
-
-      setBalance({
-        total_receitas,
-        total_despesas,
-        saldo: total_receitas - total_despesas,
-        receitas_vendas,
-        receitas_servicos,
-        receitas_outras: Math.max(0, receitas_outras),
-        despesas_insumos,
-        despesas_pessoal,
-        despesas_operacionais,
-        despesas_outras: Math.max(0, despesas_outras),
-      });
-    } catch (error) {
-      console.error('Erro ao carregar saldo:', error);
-      setBalance({
-        total_receitas: 0,
-        total_despesas: 0,
-        saldo: 0,
-        receitas_vendas: 0,
-        receitas_servicos: 0,
-        receitas_outras: 0,
-        despesas_insumos: 0,
-        despesas_pessoal: 0,
-        despesas_operacionais: 0,
-        despesas_outras: 0,
-      });
+      setRawEntries(entries);
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') {
+        console.error('Erro ao carregar dados:', error);
+        setRawEntries([]);
+      }
+    } finally {
+      setLoading(false);
     }
   }
 
-  async function loadMonthlyData() {
-    try {
-      const { data, error } = await supabase
-        .from('cash_flow')
-        .select('date, type, amount')
-        .eq('business_unit', 'factory')
-        .gte('date', startDate)
-        .lte('date', endDate);
+  const balance = useMemo<FactoryBalance>(() => {
+    const total_receitas = rawEntries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+    const total_despesas = rawEntries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
 
-      if (error) throw error;
+    const receitas_vendas = rawEntries
+      .filter(e => e.type === 'income' && e.category_type === 'income_sales')
+      .reduce((s, e) => s + e.amount, 0);
+    const receitas_servicos = rawEntries
+      .filter(e => e.type === 'income' && e.category_type === 'income_services')
+      .reduce((s, e) => s + e.amount, 0);
 
-      const monthlyMap = new Map<string, { receitas: number; despesas: number }>();
+    const despesas_insumos = rawEntries
+      .filter(e => e.type === 'expense' && ['direct_production', 'direct_resale'].includes(e.category_type ?? ''))
+      .reduce((s, e) => s + e.amount, 0);
+    const despesas_pessoal = rawEntries
+      .filter(e => e.type === 'expense' && e.category_type === 'personnel')
+      .reduce((s, e) => s + e.amount, 0);
+    const despesas_operacionais = rawEntries
+      .filter(e => e.type === 'expense' && ['transport', 'utilities', 'maintenance'].includes(e.category_type ?? ''))
+      .reduce((s, e) => s + e.amount, 0);
 
-      (data || []).forEach(entry => {
-        const month = format(new Date(entry.date), 'yyyy-MM');
-        if (!monthlyMap.has(month)) {
-          monthlyMap.set(month, { receitas: 0, despesas: 0 });
-        }
-        const md = monthlyMap.get(month)!;
-        if (entry.type === 'income') {
-          md.receitas += entry.amount;
-        } else {
-          md.despesas += entry.amount;
-        }
-      });
+    return {
+      total_receitas,
+      total_despesas,
+      saldo: total_receitas - total_despesas,
+      receitas_vendas,
+      receitas_servicos,
+      receitas_outras: Math.max(0, total_receitas - receitas_vendas - receitas_servicos),
+      despesas_insumos,
+      despesas_pessoal,
+      despesas_operacionais,
+      despesas_outras: Math.max(0, total_despesas - despesas_insumos - despesas_pessoal - despesas_operacionais),
+    };
+  }, [rawEntries]);
 
-      const monthly = Array.from(monthlyMap.entries())
-        .map(([month, d]) => ({
-          month,
-          receitas: d.receitas,
-          despesas: d.despesas,
-          saldo: d.receitas - d.despesas,
-        }))
-        .sort((a, b) => a.month.localeCompare(b.month));
-
-      setMonthlyData(monthly);
-    } catch (error) {
-      console.error('Erro ao carregar dados mensais:', error);
+  const monthlyData = useMemo<MonthlyData[]>(() => {
+    const map = new Map<string, { receitas: number; despesas: number }>();
+    for (const e of rawEntries) {
+      const month = e.date.slice(0, 7);
+      const md = map.get(month) ?? { receitas: 0, despesas: 0 };
+      if (e.type === 'income') md.receitas += e.amount;
+      else md.despesas += e.amount;
+      map.set(month, md);
     }
-  }
+    return Array.from(map.entries())
+      .map(([month, d]) => ({ month, receitas: d.receitas, despesas: d.despesas, saldo: d.receitas - d.despesas }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+  }, [rawEntries]);
 
-  async function loadCategoryData() {
-    try {
-      const { data, error } = await supabase
-        .from('cash_flow')
-        .select('type, amount, cost_categories(name)')
-        .eq('business_unit', 'factory')
-        .gte('date', startDate)
-        .lte('date', endDate);
-
-      if (error) throw error;
-
-      const receitasMap = new Map<string, { amount: number; count: number }>();
-      const despesasMap = new Map<string, { amount: number; count: number }>();
-
-      (data || []).forEach(entry => {
-        const categoryName = (entry.cost_categories as any)?.name || 'Sem categoria';
-        const map = entry.type === 'income' ? receitasMap : despesasMap;
-        if (!map.has(categoryName)) {
-          map.set(categoryName, { amount: 0, count: 0 });
-        }
-        const cd = map.get(categoryName)!;
-        cd.amount += entry.amount;
-        cd.count += 1;
-      });
-
-      setCategoryData({
-        receitas: Array.from(receitasMap.entries()).map(([category, d]) => ({
-          category,
-          amount: d.amount,
-          count: d.count,
-        })),
-        despesas: Array.from(despesasMap.entries()).map(([category, d]) => ({
-          category,
-          amount: d.amount,
-          count: d.count,
-        })),
-      });
-    } catch (error) {
-      console.error('Erro ao carregar dados por categoria:', error);
+  const categoryData = useMemo<{ receitas: CategoryData[]; despesas: CategoryData[] }>(() => {
+    const recMap = new Map<string, { amount: number; count: number }>();
+    const desMap = new Map<string, { amount: number; count: number }>();
+    for (const e of rawEntries) {
+      const name = e.category_name ?? 'Sem categoria';
+      const map = e.type === 'income' ? recMap : desMap;
+      const cd = map.get(name) ?? { amount: 0, count: 0 };
+      cd.amount += e.amount;
+      cd.count += 1;
+      map.set(name, cd);
     }
-  }
+    return {
+      receitas: Array.from(recMap.entries()).map(([category, d]) => ({ category, ...d })),
+      despesas: Array.from(desMap.entries()).map(([category, d]) => ({ category, ...d })),
+    };
+  }, [rawEntries]);
+
+  const monthlyMaxValue = useMemo(
+    () => Math.max(...monthlyData.map(d => Math.max(d.receitas, d.despesas)), 1),
+    [monthlyData]
+  );
+
+  const receitasTotalCat = useMemo(
+    () => categoryData.receitas.reduce((s, c) => s + c.amount, 0),
+    [categoryData.receitas]
+  );
+
+  const despesasTotalCat = useMemo(
+    () => categoryData.despesas.reduce((s, c) => s + c.amount, 0),
+    [categoryData.despesas]
+  );
 
   async function exportToPDF() {
     if (!balance) return;
-
     try {
       const { data: companyData } = await supabase
         .from('company_settings')
@@ -249,26 +205,15 @@ export default function FactoryFinance() {
         .maybeSingle();
 
       const doc = new jsPDF();
-
       const { addPDFHeader } = await import('../lib/pdfGenerator');
-      let currentY = await addPDFHeader(
-        doc,
-        'Relatório Financeiro - Fábrica de Artefatos',
-        companyData || undefined,
-        15
-      );
+      let currentY = await addPDFHeader(doc, 'Relatório Financeiro - Fábrica de Artefatos', companyData || undefined, 15);
 
       currentY += 5;
-
       doc.setFontSize(11);
       doc.setFont(undefined, 'bold');
       doc.text('Período:', 14, currentY);
       doc.setFont(undefined, 'normal');
-      doc.text(
-        `${format(new Date(startDate), 'dd/MM/yyyy')} a ${format(new Date(endDate), 'dd/MM/yyyy')}`,
-        33,
-        currentY
-      );
+      doc.text(`${format(new Date(startDate), 'dd/MM/yyyy')} a ${format(new Date(endDate), 'dd/MM/yyyy')}`, 33, currentY);
       currentY += 10;
 
       doc.setFontSize(12);
@@ -283,12 +228,9 @@ export default function FactoryFinance() {
       currentY += 6;
       doc.setFont(undefined, 'normal');
       doc.setTextColor(0, 0, 0);
-      doc.text(`Vendas: ${formatCurrency(balance.receitas_vendas)}`, 20, currentY);
-      currentY += 5;
-      doc.text(`Serviços: ${formatCurrency(balance.receitas_servicos)}`, 20, currentY);
-      currentY += 5;
-      doc.text(`Outras: ${formatCurrency(balance.receitas_outras)}`, 20, currentY);
-      currentY += 8;
+      doc.text(`Vendas: ${formatCurrency(balance.receitas_vendas)}`, 20, currentY); currentY += 5;
+      doc.text(`Serviços: ${formatCurrency(balance.receitas_servicos)}`, 20, currentY); currentY += 5;
+      doc.text(`Outras: ${formatCurrency(balance.receitas_outras)}`, 20, currentY); currentY += 8;
 
       doc.setTextColor(255, 0, 0);
       doc.setFont(undefined, 'bold');
@@ -296,14 +238,10 @@ export default function FactoryFinance() {
       currentY += 6;
       doc.setFont(undefined, 'normal');
       doc.setTextColor(0, 0, 0);
-      doc.text(`Insumos: ${formatCurrency(balance.despesas_insumos)}`, 20, currentY);
-      currentY += 5;
-      doc.text(`Pessoal: ${formatCurrency(balance.despesas_pessoal)}`, 20, currentY);
-      currentY += 5;
-      doc.text(`Operacionais: ${formatCurrency(balance.despesas_operacionais)}`, 20, currentY);
-      currentY += 5;
-      doc.text(`Outras: ${formatCurrency(balance.despesas_outras)}`, 20, currentY);
-      currentY += 8;
+      doc.text(`Insumos: ${formatCurrency(balance.despesas_insumos)}`, 20, currentY); currentY += 5;
+      doc.text(`Pessoal: ${formatCurrency(balance.despesas_pessoal)}`, 20, currentY); currentY += 5;
+      doc.text(`Operacionais: ${formatCurrency(balance.despesas_operacionais)}`, 20, currentY); currentY += 5;
+      doc.text(`Outras: ${formatCurrency(balance.despesas_outras)}`, 20, currentY); currentY += 8;
 
       doc.setTextColor(0, 0, 255);
       doc.setFont(undefined, 'bold');
@@ -313,17 +251,15 @@ export default function FactoryFinance() {
       currentY += 10;
 
       if (monthlyData.length > 0) {
-        const tableData = monthlyData.map(d => [
-          format(new Date(d.month + '-01'), 'MMM/yyyy'),
-          formatCurrency(d.receitas),
-          formatCurrency(d.despesas),
-          formatCurrency(d.saldo),
-        ]);
-
         autoTable(doc, {
           startY: currentY,
           head: [['Mês', 'Receitas', 'Despesas', 'Saldo']],
-          body: tableData,
+          body: monthlyData.map(d => [
+            format(new Date(d.month + '-01'), 'MMM/yyyy'),
+            formatCurrency(d.receitas),
+            formatCurrency(d.despesas),
+            formatCurrency(d.saldo),
+          ]),
           theme: 'grid',
           headStyles: { fillColor: [59, 130, 246] },
           styles: { fontSize: 10 },
@@ -341,7 +277,7 @@ export default function FactoryFinance() {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto" />
           <p className="mt-4 text-gray-600">Carregando...</p>
         </div>
       </div>
@@ -356,131 +292,94 @@ export default function FactoryFinance() {
           <p className="text-sm text-gray-600 mt-1">Controle financeiro da fábrica de artefatos</p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => setActiveView('manager')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              activeView === 'manager'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            <FileText className="h-4 w-4" />
-            Lançamentos
-          </button>
-          <button
-            onClick={() => setActiveView('charts')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              activeView === 'charts'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            <BarChart3 className="h-4 w-4" />
-            Gráficos
-          </button>
-          <button
-            onClick={() => setActiveView('reports')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              activeView === 'reports'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            <PieChart className="h-4 w-4" />
-            Relatórios
-          </button>
-          <button
-            onClick={() => setActiveView('customer-statement')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              activeView === 'customer-statement'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            <Users className="h-4 w-4" />
-            Extrato de Clientes
-          </button>
+          {(['manager', 'charts', 'reports', 'customer-statement'] as const).map(view => {
+            const icons = { manager: FileText, charts: BarChart3, reports: PieChart, 'customer-statement': Users };
+            const labels = { manager: 'Lançamentos', charts: 'Gráficos', reports: 'Relatórios', 'customer-statement': 'Extrato de Clientes' };
+            const Icon = icons[view];
+            return (
+              <button
+                key={view}
+                onClick={() => setActiveView(view)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+                  activeView === view ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {labels[view]}
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {activeView !== 'customer-statement' && (
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => {
-              const current = new Date(startDate);
-              const newStart = new Date(current.getFullYear(), current.getMonth() - 1, 1);
-              const newEnd = new Date(newStart.getFullYear(), newStart.getMonth() + 1, 0);
-              setStartDate(format(newStart, 'yyyy-MM-dd'));
-              setEndDate(format(newEnd, 'yyyy-MM-dd'));
-            }}
-            className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 font-medium text-sm"
-          >
-            Mês Anterior
-          </button>
-
-          <div className="flex items-center gap-2 bg-gray-50 px-4 py-2 rounded-lg border border-gray-200">
-            <Calendar className="h-5 w-5 text-blue-600" />
-            <input
-              type="month"
-              value={startDate.slice(0, 7)}
-              onChange={(e) => {
-                const [year, month] = e.target.value.split('-');
-                const newStart = new Date(parseInt(year), parseInt(month) - 1, 1);
-                const newEnd = new Date(parseInt(year), parseInt(month), 0);
-                setStartDate(format(newStart, 'yyyy-MM-dd'));
-                setEndDate(format(newEnd, 'yyyy-MM-dd'));
+        <div className="bg-white rounded-lg shadow p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => {
+                const current = new Date(startDate);
+                const ns = new Date(current.getFullYear(), current.getMonth() - 1, 1);
+                setStartDate(format(ns, 'yyyy-MM-dd'));
+                setEndDate(format(new Date(ns.getFullYear(), ns.getMonth() + 1, 0), 'yyyy-MM-dd'));
               }}
-              className="border-none bg-transparent text-gray-800 font-semibold focus:ring-0 cursor-pointer text-sm"
-            />
+              className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 font-medium text-sm"
+            >
+              Mês Anterior
+            </button>
+            <div className="flex items-center gap-2 bg-gray-50 px-4 py-2 rounded-lg border border-gray-200">
+              <Calendar className="h-5 w-5 text-blue-600" />
+              <input
+                type="month"
+                value={startDate.slice(0, 7)}
+                onChange={e => {
+                  const [year, month] = e.target.value.split('-');
+                  const ns = new Date(parseInt(year), parseInt(month) - 1, 1);
+                  setStartDate(format(ns, 'yyyy-MM-dd'));
+                  setEndDate(format(new Date(parseInt(year), parseInt(month), 0), 'yyyy-MM-dd'));
+                }}
+                className="border-none bg-transparent text-gray-800 font-semibold focus:ring-0 cursor-pointer text-sm"
+              />
+            </div>
+            <button
+              onClick={() => {
+                const current = new Date(startDate);
+                const ns = new Date(current.getFullYear(), current.getMonth() + 1, 1);
+                setStartDate(format(ns, 'yyyy-MM-dd'));
+                setEndDate(format(new Date(ns.getFullYear(), ns.getMonth() + 1, 0), 'yyyy-MM-dd'));
+              }}
+              className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 font-medium text-sm"
+            >
+              Próximo Mês
+            </button>
+            <button
+              onClick={() => {
+                const today = new Date();
+                const ns = new Date(today.getFullYear(), today.getMonth(), 1);
+                setStartDate(format(ns, 'yyyy-MM-dd'));
+                setEndDate(format(new Date(today.getFullYear(), today.getMonth() + 1, 0), 'yyyy-MM-dd'));
+              }}
+              className="px-3 py-2 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 font-medium text-sm border border-blue-200"
+            >
+              Mês Atual
+            </button>
+            <button
+              onClick={() => loadData()}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm ml-auto"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Atualizar
+            </button>
           </div>
-
-          <button
-            onClick={() => {
-              const current = new Date(startDate);
-              const newStart = new Date(current.getFullYear(), current.getMonth() + 1, 1);
-              const newEnd = new Date(newStart.getFullYear(), newStart.getMonth() + 1, 0);
-              setStartDate(format(newStart, 'yyyy-MM-dd'));
-              setEndDate(format(newEnd, 'yyyy-MM-dd'));
-            }}
-            className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 font-medium text-sm"
-          >
-            Próximo Mês
-          </button>
-
-          <button
-            onClick={() => {
-              const today = new Date();
-              const newStart = new Date(today.getFullYear(), today.getMonth(), 1);
-              const newEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-              setStartDate(format(newStart, 'yyyy-MM-dd'));
-              setEndDate(format(newEnd, 'yyyy-MM-dd'));
-            }}
-            className="px-3 py-2 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 font-medium text-sm border border-blue-200"
-          >
-            Mês Atual
-          </button>
-
-          <button
-            onClick={loadData}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm ml-auto"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Atualizar
-          </button>
         </div>
-      </div>
       )}
 
-      {activeView !== 'customer-statement' && balance && (
+      {activeView !== 'customer-statement' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg shadow p-6 border border-green-200">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-green-600">Total Receitas</p>
-                <p className="text-2xl font-bold text-green-700 mt-2">
-                  {formatCurrency(balance.total_receitas)}
-                </p>
+                <p className="text-2xl font-bold text-green-700 mt-2">{formatCurrency(balance.total_receitas)}</p>
                 <div className="mt-3 space-y-1 text-xs text-green-600">
                   <p>Vendas: {formatCurrency(balance.receitas_vendas)}</p>
                   <p>Serviços: {formatCurrency(balance.receitas_servicos)}</p>
@@ -495,9 +394,7 @@ export default function FactoryFinance() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-red-600">Total Despesas</p>
-                <p className="text-2xl font-bold text-red-700 mt-2">
-                  {formatCurrency(balance.total_despesas)}
-                </p>
+                <p className="text-2xl font-bold text-red-700 mt-2">{formatCurrency(balance.total_despesas)}</p>
                 <div className="mt-3 space-y-1 text-xs text-red-600">
                   <p>Insumos: {formatCurrency(balance.despesas_insumos)}</p>
                   <p>Pessoal: {formatCurrency(balance.despesas_pessoal)}</p>
@@ -509,12 +406,10 @@ export default function FactoryFinance() {
             </div>
           </div>
 
-          <div className={`bg-gradient-to-br ${balance.saldo >= 0 ? 'from-blue-50 to-blue-100' : 'from-orange-50 to-orange-100'} rounded-lg shadow p-6 border ${balance.saldo >= 0 ? 'border-blue-200' : 'border-orange-200'}`}>
+          <div className={`bg-gradient-to-br ${balance.saldo >= 0 ? 'from-blue-50 to-blue-100 border-blue-200' : 'from-orange-50 to-orange-100 border-orange-200'} rounded-lg shadow p-6 border`}>
             <div className="flex items-center justify-between">
               <div>
-                <p className={`text-sm font-medium ${balance.saldo >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
-                  Saldo
-                </p>
+                <p className={`text-sm font-medium ${balance.saldo >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>Saldo</p>
                 <p className={`text-2xl font-bold ${balance.saldo >= 0 ? 'text-blue-700' : 'text-orange-700'} mt-2`}>
                   {formatCurrency(balance.saldo)}
                 </p>
@@ -527,17 +422,14 @@ export default function FactoryFinance() {
       )}
 
       {activeView === 'manager' && (
-        <FactoryFinanceManager
-          initialStartDate={startDate}
-          initialEndDate={endDate}
-        />
+        <FactoryFinanceManager initialStartDate={startDate} initialEndDate={endDate} />
       )}
 
       {activeView === 'customer-statement' && (
         <Suspense fallback={
           <div className="flex items-center justify-center h-64">
             <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto" />
               <p className="mt-4 text-gray-600">Carregando...</p>
             </div>
           </div>
@@ -555,10 +447,8 @@ export default function FactoryFinance() {
             ) : (
               <div className="space-y-4">
                 {monthlyData.map((data, index) => {
-                  const maxValue = Math.max(...monthlyData.map(d => Math.max(d.receitas, d.despesas)), 1);
-                  const receitasWidth = (data.receitas / maxValue) * 100;
-                  const despesasWidth = (data.despesas / maxValue) * 100;
-
+                  const receitasWidth = (data.receitas / monthlyMaxValue) * 100;
+                  const despesasWidth = (data.despesas / monthlyMaxValue) * 100;
                   return (
                     <div key={index} className="space-y-2">
                       <div className="flex items-center justify-between text-sm font-medium text-gray-700">
@@ -571,26 +461,16 @@ export default function FactoryFinance() {
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-green-600 w-20">Receitas</span>
                           <div className="flex-1 h-6 bg-gray-100 rounded overflow-hidden">
-                            <div
-                              className="h-full bg-green-500 flex items-center justify-end px-2"
-                              style={{ width: `${receitasWidth}%` }}
-                            >
-                              <span className="text-xs text-white font-medium">
-                                {formatCurrency(data.receitas)}
-                              </span>
+                            <div className="h-full bg-green-500 flex items-center justify-end px-2" style={{ width: `${receitasWidth}%` }}>
+                              <span className="text-xs text-white font-medium">{formatCurrency(data.receitas)}</span>
                             </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-red-600 w-20">Despesas</span>
                           <div className="flex-1 h-6 bg-gray-100 rounded overflow-hidden">
-                            <div
-                              className="h-full bg-red-500 flex items-center justify-end px-2"
-                              style={{ width: `${despesasWidth}%` }}
-                            >
-                              <span className="text-xs text-white font-medium">
-                                {formatCurrency(data.despesas)}
-                              </span>
+                            <div className="h-full bg-red-500 flex items-center justify-end px-2" style={{ width: `${despesasWidth}%` }}>
+                              <span className="text-xs text-white font-medium">{formatCurrency(data.despesas)}</span>
                             </div>
                           </div>
                         </div>
@@ -610,8 +490,7 @@ export default function FactoryFinance() {
               ) : (
                 <div className="space-y-4">
                   {categoryData.receitas.map((cat, index) => {
-                    const total = categoryData.receitas.reduce((sum, c) => sum + c.amount, 0);
-                    const percentage = total > 0 ? (cat.amount / total) * 100 : 0;
+                    const percentage = receitasTotalCat > 0 ? (cat.amount / receitasTotalCat) * 100 : 0;
                     return (
                       <div key={index} className="space-y-2">
                         <div className="flex items-center justify-between text-sm">
@@ -622,9 +501,7 @@ export default function FactoryFinance() {
                           <div className="flex-1 h-4 bg-gray-100 rounded overflow-hidden">
                             <div className="h-full bg-green-500" style={{ width: `${percentage}%` }} />
                           </div>
-                          <span className="text-xs text-gray-600 w-12 text-right">
-                            {percentage.toFixed(1)}%
-                          </span>
+                          <span className="text-xs text-gray-600 w-12 text-right">{percentage.toFixed(1)}%</span>
                         </div>
                         <p className="text-xs text-gray-500">{cat.count} lançamento(s)</p>
                       </div>
@@ -641,8 +518,7 @@ export default function FactoryFinance() {
               ) : (
                 <div className="space-y-4">
                   {categoryData.despesas.map((cat, index) => {
-                    const total = categoryData.despesas.reduce((sum, c) => sum + c.amount, 0);
-                    const percentage = total > 0 ? (cat.amount / total) * 100 : 0;
+                    const percentage = despesasTotalCat > 0 ? (cat.amount / despesasTotalCat) * 100 : 0;
                     return (
                       <div key={index} className="space-y-2">
                         <div className="flex items-center justify-between text-sm">
@@ -653,9 +529,7 @@ export default function FactoryFinance() {
                           <div className="flex-1 h-4 bg-gray-100 rounded overflow-hidden">
                             <div className="h-full bg-red-500" style={{ width: `${percentage}%` }} />
                           </div>
-                          <span className="text-xs text-gray-600 w-12 text-right">
-                            {percentage.toFixed(1)}%
-                          </span>
+                          <span className="text-xs text-gray-600 w-12 text-right">{percentage.toFixed(1)}%</span>
                         </div>
                         <p className="text-xs text-gray-500">{cat.count} lançamento(s)</p>
                       </div>
@@ -668,7 +542,7 @@ export default function FactoryFinance() {
         </div>
       )}
 
-      {activeView === 'reports' && balance && (
+      {activeView === 'reports' && (
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-semibold text-gray-900">Relatório Gerencial</h3>
@@ -696,18 +570,9 @@ export default function FactoryFinance() {
                   <p className="text-sm font-medium text-gray-700">Total de Receitas</p>
                   <p className="text-2xl font-bold text-green-600">{formatCurrency(balance.total_receitas)}</p>
                   <div className="text-sm text-gray-600 space-y-1">
-                    <p>
-                      Vendas: {formatCurrency(balance.receitas_vendas)}
-                      {balance.total_receitas > 0 && ` (${((balance.receitas_vendas / balance.total_receitas) * 100).toFixed(1)}%)`}
-                    </p>
-                    <p>
-                      Serviços: {formatCurrency(balance.receitas_servicos)}
-                      {balance.total_receitas > 0 && ` (${((balance.receitas_servicos / balance.total_receitas) * 100).toFixed(1)}%)`}
-                    </p>
-                    <p>
-                      Outras: {formatCurrency(balance.receitas_outras)}
-                      {balance.total_receitas > 0 && ` (${((balance.receitas_outras / balance.total_receitas) * 100).toFixed(1)}%)`}
-                    </p>
+                    <p>Vendas: {formatCurrency(balance.receitas_vendas)}{balance.total_receitas > 0 && ` (${((balance.receitas_vendas / balance.total_receitas) * 100).toFixed(1)}%)`}</p>
+                    <p>Serviços: {formatCurrency(balance.receitas_servicos)}{balance.total_receitas > 0 && ` (${((balance.receitas_servicos / balance.total_receitas) * 100).toFixed(1)}%)`}</p>
+                    <p>Outras: {formatCurrency(balance.receitas_outras)}{balance.total_receitas > 0 && ` (${((balance.receitas_outras / balance.total_receitas) * 100).toFixed(1)}%)`}</p>
                   </div>
                 </div>
 
@@ -715,22 +580,10 @@ export default function FactoryFinance() {
                   <p className="text-sm font-medium text-gray-700">Total de Despesas</p>
                   <p className="text-2xl font-bold text-red-600">{formatCurrency(balance.total_despesas)}</p>
                   <div className="text-sm text-gray-600 space-y-1">
-                    <p>
-                      Insumos: {formatCurrency(balance.despesas_insumos)}
-                      {balance.total_despesas > 0 && ` (${((balance.despesas_insumos / balance.total_despesas) * 100).toFixed(1)}%)`}
-                    </p>
-                    <p>
-                      Pessoal: {formatCurrency(balance.despesas_pessoal)}
-                      {balance.total_despesas > 0 && ` (${((balance.despesas_pessoal / balance.total_despesas) * 100).toFixed(1)}%)`}
-                    </p>
-                    <p>
-                      Operacionais: {formatCurrency(balance.despesas_operacionais)}
-                      {balance.total_despesas > 0 && ` (${((balance.despesas_operacionais / balance.total_despesas) * 100).toFixed(1)}%)`}
-                    </p>
-                    <p>
-                      Outras: {formatCurrency(balance.despesas_outras)}
-                      {balance.total_despesas > 0 && ` (${((balance.despesas_outras / balance.total_despesas) * 100).toFixed(1)}%)`}
-                    </p>
+                    <p>Insumos: {formatCurrency(balance.despesas_insumos)}{balance.total_despesas > 0 && ` (${((balance.despesas_insumos / balance.total_despesas) * 100).toFixed(1)}%)`}</p>
+                    <p>Pessoal: {formatCurrency(balance.despesas_pessoal)}{balance.total_despesas > 0 && ` (${((balance.despesas_pessoal / balance.total_despesas) * 100).toFixed(1)}%)`}</p>
+                    <p>Operacionais: {formatCurrency(balance.despesas_operacionais)}{balance.total_despesas > 0 && ` (${((balance.despesas_operacionais / balance.total_despesas) * 100).toFixed(1)}%)`}</p>
+                    <p>Outras: {formatCurrency(balance.despesas_outras)}{balance.total_despesas > 0 && ` (${((balance.despesas_outras / balance.total_despesas) * 100).toFixed(1)}%)`}</p>
                   </div>
                 </div>
               </div>
@@ -744,9 +597,7 @@ export default function FactoryFinance() {
                   {formatCurrency(balance.saldo)}
                 </p>
                 <p className="text-sm text-gray-600 mt-2">
-                  Margem: {balance.total_receitas > 0
-                    ? `${((balance.saldo / balance.total_receitas) * 100).toFixed(1)}%`
-                    : '0%'}
+                  Margem: {balance.total_receitas > 0 ? `${((balance.saldo / balance.total_receitas) * 100).toFixed(1)}%` : '0%'}
                 </p>
               </div>
             </div>
@@ -767,15 +618,9 @@ export default function FactoryFinance() {
                     <tbody className="bg-white divide-y divide-gray-200">
                       {monthlyData.map((data, index) => (
                         <tr key={index} className="hover:bg-gray-50">
-                          <td className="px-4 py-3 text-sm text-gray-900">
-                            {format(new Date(data.month + '-01'), 'MMM/yyyy')}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-right text-green-600 font-medium">
-                            {formatCurrency(data.receitas)}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-right text-red-600 font-medium">
-                            {formatCurrency(data.despesas)}
-                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-900">{format(new Date(data.month + '-01'), 'MMM/yyyy')}</td>
+                          <td className="px-4 py-3 text-sm text-right text-green-600 font-medium">{formatCurrency(data.receitas)}</td>
+                          <td className="px-4 py-3 text-sm text-right text-red-600 font-medium">{formatCurrency(data.despesas)}</td>
                           <td className={`px-4 py-3 text-sm text-right font-bold ${data.saldo >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
                             {formatCurrency(data.saldo)}
                           </td>
