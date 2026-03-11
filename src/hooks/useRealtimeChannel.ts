@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { leakDetector } from '../lib/leakDetector';
+import { isStabilityMode } from '../lib/realtimeConfig';
 
 export interface RealtimeEvent {
   eventType: 'INSERT' | 'UPDATE' | 'DELETE';
@@ -17,6 +18,8 @@ interface UseRealtimeChannelOptions {
   debounceMs?: number;
 }
 
+const activeChannels = new Map<string, number>();
+
 export function useRealtimeChannel({
   channelName,
   tables,
@@ -32,6 +35,25 @@ export function useRealtimeChannel({
 
   useEffect(() => {
     if (!enabled || tables.length === 0) return;
+    if (isStabilityMode()) return;
+
+    const existing = activeChannels.get(channelName) ?? 0;
+    if (existing > 0) {
+      if (import.meta.env.DEV) {
+        console.warn(
+          `[useRealtimeChannel] Duplicate channel detected: "${channelName}". ` +
+          `Already ${existing} subscriber(s). Skipping subscription to prevent duplicate events.`
+        );
+      }
+      activeChannels.set(channelName, existing + 1);
+      return () => {
+        const count = activeChannels.get(channelName) ?? 1;
+        if (count <= 1) activeChannels.delete(channelName);
+        else activeChannels.set(channelName, count - 1);
+      };
+    }
+
+    activeChannels.set(channelName, 1);
 
     if (import.meta.env.DEV) {
       leakDetector?.realtimeChannels?.add?.(channelName);
@@ -75,6 +97,11 @@ export function useRealtimeChannel({
       }
       pendingEventsRef.current = [];
       supabase.removeChannel(channel);
+
+      const count = activeChannels.get(channelName) ?? 1;
+      if (count <= 1) activeChannels.delete(channelName);
+      else activeChannels.set(channelName, count - 1);
+
       if (import.meta.env.DEV) {
         leakDetector?.realtimeChannels?.delete?.(channelName);
       }

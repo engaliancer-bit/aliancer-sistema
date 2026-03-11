@@ -443,15 +443,23 @@ export default function FactoryFinanceManager({
 
   const costCategoriesRef = useRef<CostCategory[]>([]);
   costCategoriesRef.current = costCategories;
+  const costCatMapRef = useRef<Map<string, CostCategory>>(new Map());
+  costCatMapRef.current = new Map(costCategories.map((c) => [c.id, c]));
 
   const paymentMethodsRef = useRef<PaymentMethod[]>([]);
   paymentMethodsRef.current = paymentMethods;
+  const payMethodMapRef = useRef<Map<string, PaymentMethod>>(new Map());
+  payMethodMapRef.current = new Map(paymentMethods.map((p) => [p.id, p]));
 
   const customersRef = useRef<Customer[]>([]);
   customersRef.current = customers;
+  const customersMapRef = useRef<Map<string, Customer>>(new Map());
+  customersMapRef.current = new Map(customers.map((c) => [c.id, c]));
 
   const constructionWorksRef = useRef<ConstructionWork[]>([]);
   constructionWorksRef.current = constructionWorks;
+  const constructionWorksMapRef = useRef<Map<string, ConstructionWork>>(new Map());
+  constructionWorksMapRef.current = new Map(constructionWorks.map((w) => [w.id, w]));
 
   const { populate: populateCostCategoriesCache } = useNormalizedRefTable<CostCategory>({
     tableName: 'cost_categories',
@@ -495,18 +503,10 @@ export default function FactoryFinanceManager({
     const customerId = raw.customer_id as string | null;
     const workId = raw.construction_work_id as string | null;
 
-    const costCat = costCatId
-      ? (costCategoriesRef.current.find((c) => c.id === costCatId) ?? null)
-      : null;
-    const payMethod = payMethodId
-      ? (paymentMethodsRef.current.find((p) => p.id === payMethodId) ?? null)
-      : null;
-    const customer = customerId
-      ? (customersRef.current.find((c) => c.id === customerId) ?? null)
-      : null;
-    const work = workId
-      ? (constructionWorksRef.current.find((w) => w.id === workId) ?? null)
-      : null;
+    const costCat = costCatId ? (costCatMapRef.current.get(costCatId) ?? null) : null;
+    const payMethod = payMethodId ? (payMethodMapRef.current.get(payMethodId) ?? null) : null;
+    const customer = customerId ? (customersMapRef.current.get(customerId) ?? null) : null;
+    const work = workId ? (constructionWorksMapRef.current.get(workId) ?? null) : null;
 
     return {
       ...(raw as unknown as CashFlowEntry),

@@ -251,6 +251,8 @@ export default function Materials() {
 
   const suppliersRef = useRef<Supplier[]>([]);
   suppliersRef.current = suppliers;
+  const suppliersMapRef = useRef<Map<string, Supplier>>(new Map());
+  suppliersMapRef.current = new Map(suppliers.map((s) => [s.id, s]));
 
   const pendingInsertIdsRef = useRef<Set<string>>(new Set());
   const insertFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -280,7 +282,7 @@ export default function Materials() {
             const raw = evt.new as Partial<Material>;
             if (!raw.id) continue;
             const supplierObj = raw.supplier_id
-              ? (suppliersRef.current.find((s) => s.id === raw.supplier_id) ?? null)
+              ? (suppliersMapRef.current.get(raw.supplier_id) ?? null)
               : null;
             next = next.map((m) =>
               m.id === raw.id
@@ -314,7 +316,7 @@ export default function Materials() {
               .in('id', ids);
             if (error) throw error;
             if (data && data.length > 0) {
-              const supMap = new Map(suppliersRef.current.map((s) => [s.id, s]));
+              const supMap = suppliersMapRef.current;
               const enriched = data.map((m) => ({
                 ...m,
                 suppliers: m.supplier_id ? (supMap.get(m.supplier_id) ?? null) : null,
