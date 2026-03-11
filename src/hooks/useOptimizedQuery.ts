@@ -1,5 +1,4 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { memoryCleanup } from '../lib/memoryCleanup';
 
 interface UseOptimizedQueryOptions {
   enabled?: boolean;
@@ -45,7 +44,6 @@ export function useOptimizedQuery<T>(
     }
 
     abortControllerRef.current = new AbortController();
-    memoryCleanup.registerAbortController(abortControllerRef.current);
 
     try {
       setIsFetching(true);
@@ -73,9 +71,6 @@ export function useOptimizedQuery<T>(
         setIsLoading(false);
         setIsFetching(false);
       }
-      if (abortControllerRef.current) {
-        memoryCleanup.unregisterAbortController(abortControllerRef.current);
-      }
     }
   }, [enabled, queryFn, queryKey, staleTime]);
 
@@ -101,7 +96,7 @@ export function useOptimizedQuery<T>(
       mountedRef.current = false;
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
-        memoryCleanup.unregisterAbortController(abortControllerRef.current);
+        abortControllerRef.current = null;
       }
       clearTimeout(cacheCleanupTimeout);
     };

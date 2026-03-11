@@ -1,5 +1,5 @@
 import { useEffect, useCallback } from 'react';
-import { memoryCleanup } from '../lib/memoryCleanup';
+import { globalMemoryCleanup } from '../lib/memoryCleanup';
 import { useAppCache } from '../contexts/AppCacheContext';
 import { supabase } from '../lib/supabase';
 
@@ -11,7 +11,7 @@ export function useLogoutCleanup() {
 
     clearAllCache();
 
-    await memoryCleanup.cleanupOnLogout();
+    await globalMemoryCleanup.cleanupOnLogout();
 
     console.log('[Logout] Processo de logout concluído');
 
@@ -24,7 +24,7 @@ export function useLogoutCleanup() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         console.log('[Cleanup] Página ficou inativa, executando limpeza preventiva...');
-        memoryCleanup.cleanupAll().catch(err => {
+        globalMemoryCleanup.cleanupAll().catch(err => {
           console.error('[Cleanup] Erro na limpeza preventiva:', err);
         });
       }
@@ -32,7 +32,7 @@ export function useLogoutCleanup() {
 
     const handleBeforeUnload = () => {
       console.log('[Cleanup] Página sendo fechada, executando limpeza...');
-      memoryCleanup.cleanupAll().catch(err => {
+      globalMemoryCleanup.cleanupAll().catch(err => {
         console.error('[Cleanup] Erro na limpeza ao fechar:', err);
       });
     };
@@ -52,7 +52,7 @@ export function useLogoutCleanup() {
         if (event === 'SIGNED_OUT') {
           console.log('[Auth] Usuário deslogado, executando limpeza completa...');
           clearAllCache();
-          await memoryCleanup.cleanupAll();
+          await globalMemoryCleanup.cleanupAll();
         }
       }
     );
@@ -64,7 +64,7 @@ export function useLogoutCleanup() {
 
   return {
     logout: handleLogout,
-    getMemoryStats: () => memoryCleanup.getStats(),
+    getMemoryStats: () => globalMemoryCleanup.getStats(),
   };
 }
 
@@ -104,7 +104,7 @@ export function useIdleCleanup(idleTimeMs: number = 5 * 60 * 1000) {
           console.log('[Cleanup] Usuário inativo há', idleTimeMs / 1000, 'segundos');
           isIdle = true;
 
-          memoryCleanup.cleanupAll().then(() => {
+          globalMemoryCleanup.cleanupAll().then(() => {
             console.log('[Cleanup] Limpeza automática por inatividade concluída');
           }).catch(err => {
             console.error('[Cleanup] Erro na limpeza por inatividade:', err);
