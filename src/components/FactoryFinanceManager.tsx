@@ -308,6 +308,9 @@ export default function FactoryFinanceManager({
   // [GUARD] Prevent concurrent loadData invocations
   const isLoadingDataRef = useRef(false);
 
+  const pendingInsertCashFlowRef = useRef<Set<string>>(new Set());
+  const insertCashFlowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (initialStartDate) setStartDate(initialStartDate);
     if (initialEndDate) setEndDate(initialEndDate);
@@ -320,6 +323,11 @@ export default function FactoryFinanceManager({
   async function loadData() {
     if (isLoadingDataRef.current) return;
     isLoadingDataRef.current = true;
+    if (insertCashFlowTimerRef.current) {
+      clearTimeout(insertCashFlowTimerRef.current);
+      insertCashFlowTimerRef.current = null;
+    }
+    pendingInsertCashFlowRef.current.clear();
     setLoading(true);
     const t0 = performance.now();
     try {
@@ -411,8 +419,18 @@ export default function FactoryFinanceManager({
 
   function handleConfirmPaymentSuccess() {
     setShowConfirmModal(false);
+    if (selectedEntryForConfirm) {
+      const confirmedId = selectedEntryForConfirm.id;
+      const confirmedDate = format(new Date(), 'yyyy-MM-dd');
+      setEntries((prev) =>
+        prev.map((e) =>
+          e.id === confirmedId
+            ? { ...e, payment_status: 'confirmado', payment_confirmed_date: confirmedDate }
+            : e
+        )
+      );
+    }
     setSelectedEntryForConfirm(null);
-    loadData();
   }
 
   async function loadCostCategories() {
@@ -522,9 +540,6 @@ export default function FactoryFinanceManager({
   const endDateRef = useRef(endDate);
   endDateRef.current = endDate;
 
-  const pendingInsertCashFlowRef = useRef<Set<string>>(new Set());
-  const insertCashFlowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useRealtimeChannel({
     channelName: 'receitas-cash-flow',
     tables: ['cash_flow'],
@@ -570,6 +585,10 @@ export default function FactoryFinanceManager({
             const bu = (evt.new as any)?.business_unit as string | undefined;
             if (!id) continue;
             if (bu && bu !== 'factory') continue;
+            if (pendingInsertCashFlowRef.current.has(id)) {
+              pendingInsertCashFlowRef.current.delete(id);
+              continue;
+            }
             const alreadyPresent = next.some((e) => e.id === id);
             if (!alreadyPresent) insertIds.push(id);
           }
@@ -697,15 +716,50 @@ export default function FactoryFinanceManager({
           .update(entryData)
           .eq('id', editingEntry.id);
         if (error) throw error;
+        const updatedEntry: CashFlowEntry = {
+          ...editingEntry,
+          ...entryData,
+          cost_categories: entryData.cost_category_id
+            ? (costCatMapRef.current.get(entryData.cost_category_id) ?? null)
+              ? { name: costCatMapRef.current.get(entryData.cost_category_id)!.name, type: costCatMapRef.current.get(entryData.cost_category_id)!.type }
+              : null
+            : null,
+          payment_methods: entryData.payment_method_id
+            ? (payMethodMapRef.current.get(entryData.payment_method_id) ?? null)
+              ? { name: payMethodMapRef.current.get(entryData.payment_method_id)!.name }
+              : null
+            : null,
+          customers: entryData.customer_id
+            ? (customersMapRef.current.get(entryData.customer_id) ?? null)
+              ? { name: customersMapRef.current.get(entryData.customer_id)!.name }
+              : null
+            : null,
+          construction_works: entryData.construction_work_id
+            ? (constructionWorksMapRef.current.get(entryData.construction_work_id) ?? null)
+              ? { work_name: constructionWorksMapRef.current.get(entryData.construction_work_id)!.work_name }
+              : null
+            : null,
+        };
+        setEntries((prev) => prev.map((e) => (e.id === editingEntry.id ? updatedEntry : e)));
       } else {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from('cash_flow')
-          .insert([entryData]);
+          .insert([entryData])
+          .select('id, date, type, description, amount, payment_method_id, cost_category_id, purchase_id, sale_id, payable_account_id, customer_revenue_id, customer_id, construction_work_id, notes, reference, payment_status, payment_confirmed_date')
+          .single();
         if (error) throw error;
+        if (data) {
+          const newEntry = enrichEntry(data as Record<string, unknown>);
+          pendingInsertCashFlowRef.current.add(newEntry.id);
+          setEntries((prev) => {
+            const existingIds = new Set(prev.map((e) => e.id));
+            if (existingIds.has(newEntry.id)) return prev;
+            return [newEntry, ...prev];
+          });
+        }
       }
 
       setShowModal(false);
-      loadData();
     } catch (error: any) {
       alert('Erro ao salvar: ' + error.message);
     }
@@ -719,7 +773,7 @@ export default function FactoryFinanceManager({
         .delete()
         .eq('id', id);
       if (error) throw error;
-      loadData();
+      setEntries((prev) => prev.filter((e) => e.id !== id));
     } catch (error: any) {
       alert('Erro ao excluir: ' + error.message);
     }
