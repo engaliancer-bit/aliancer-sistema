@@ -16,7 +16,7 @@ interface StatementEntry {
   id: string;
   date: string;
   type: 'debit' | 'credit';
-  origin: 'venda' | 'orcamento' | 'laje_nervurada' | 'obra';
+  origin: 'venda' | 'orcamento' | 'laje_nervurada' | 'obra' | 'recebimento_obra';
   description: string;
   reference: string;
   debit_amount: number;
@@ -24,6 +24,7 @@ interface StatementEntry {
   balance: number;
   payment_status?: 'unpaid' | 'partial' | 'paid';
   quote_id?: string;
+  work_id?: string;
   paid_amount?: number;
   total_amount?: number;
 }
@@ -206,33 +207,72 @@ const CustomerStatement: React.FC = () => {
         .select('id, work_name, contract_type, total_contract_value, start_date, created_at')
         .eq('customer_id', selectedCustomerId)
         .eq('contract_type', 'pacote_fechado')
-        .in('status', ['em_andamento', 'concluido', 'planejamento'])
+        .in('status', ['em_andamento', 'concluido', 'planejamento', 'cancelada'])
         .order('created_at', { ascending: true });
 
       if (worksError) {
         console.error('Erro ao buscar obras:', worksError);
-      } else if (constructionWorks) {
+      } else if (constructionWorks && constructionWorks.length > 0) {
+        const workIds = constructionWorks.map((w: any) => w.id);
+
+        const { data: workPayments } = await supabase
+          .from('customer_revenue')
+          .select('id, origin_id, payment_amount, payment_date, payment_method, receipt_number, origin_description')
+          .eq('customer_id', selectedCustomerId)
+          .eq('origin_type', 'construction_work')
+          .in('origin_id', workIds)
+          .order('payment_date', { ascending: true });
+
+        const paymentsByWork: Record<string, any[]> = {};
+        for (const payment of workPayments || []) {
+          if (!paymentsByWork[payment.origin_id]) paymentsByWork[payment.origin_id] = [];
+          paymentsByWork[payment.origin_id].push(payment);
+        }
+
         for (const work of constructionWorks) {
           const workDate = work.start_date || work.created_at;
           const dateOnly = workDate.split('T')[0];
 
-          if (dateOnly >= startDate && dateOnly <= endDate) {
+          statementEntries.push({
+            id: `work-${work.id}`,
+            date: dateOnly,
+            type: 'debit',
+            origin: 'obra',
+            description: `Obra Pacote Fechado: ${work.work_name}`,
+            reference: `Obra #${work.id.substring(0, 8)}`,
+            debit_amount: Number(work.total_contract_value),
+            credit_amount: 0,
+            balance: 0,
+            work_id: work.id,
+          });
+
+          const payments = paymentsByWork[work.id] || [];
+          for (const payment of payments) {
+            const payDate = payment.payment_date || dateOnly;
             statementEntries.push({
-              id: `work-${work.id}`,
-              date: dateOnly,
-              type: 'debit',
-              origin: 'obra',
-              description: `Obra Pacote Fechado: ${work.work_name}`,
+              id: `work-payment-${payment.id}`,
+              date: payDate,
+              type: 'credit',
+              origin: 'recebimento_obra',
+              description: `Recebimento - ${work.work_name}${payment.receipt_number ? ` (Recibo: ${payment.receipt_number})` : ''}`,
               reference: `Obra #${work.id.substring(0, 8)}`,
-              debit_amount: Number(work.total_contract_value),
-              credit_amount: 0,
+              debit_amount: 0,
+              credit_amount: Number(payment.payment_amount),
               balance: 0,
+              work_id: work.id,
             });
           }
         }
       }
 
-      statementEntries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      statementEntries.sort((a, b) => {
+        const dateA = new Date(a.date).getTime();
+        const dateB = new Date(b.date).getTime();
+        if (dateA !== dateB) return dateA - dateB;
+        if (a.type === 'debit' && b.type === 'credit') return -1;
+        if (a.type === 'credit' && b.type === 'debit') return 1;
+        return 0;
+      });
 
       let runningBalance = 0;
       const entriesWithBalance = statementEntries.map(entry => {
@@ -403,6 +443,8 @@ const CustomerStatement: React.FC = () => {
       case 'venda': return 'Venda';
       case 'orcamento': return 'Orçamento';
       case 'laje_nervurada': return 'Laje Nervurada';
+      case 'obra': return 'Obra';
+      case 'recebimento_obra': return 'Receb. Obra';
       default: return origin;
     }
   };
@@ -412,6 +454,8 @@ const CustomerStatement: React.FC = () => {
       case 'venda': return 'bg-blue-100 text-blue-800';
       case 'orcamento': return 'bg-yellow-100 text-yellow-800';
       case 'laje_nervurada': return 'bg-green-100 text-green-800';
+      case 'obra': return 'bg-orange-100 text-orange-800';
+      case 'recebimento_obra': return 'bg-teal-100 text-teal-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -450,7 +494,7 @@ const CustomerStatement: React.FC = () => {
           <FileText className="text-[#0A7EC2]" size={32} />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Extrato do Cliente</h1>
-            <p className="text-sm text-gray-600">Orçamentos aprovados e pagamentos realizados da fábrica</p>
+            <p className="text-sm text-gray-600">Orçamentos, obras e recebimentos do cliente</p>
           </div>
         </div>
       </div>
@@ -545,7 +589,7 @@ const CustomerStatement: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-red-600 font-medium">Total a Receber</p>
-                    <p className="text-xs text-red-500 mb-1">Orçamentos Aprovados</p>
+                    <p className="text-xs text-red-500 mb-1">Orçamentos e Obras</p>
                     <p className="text-2xl font-bold text-red-700">
                       R$ {summary.totalDebits.toFixed(2)}
                     </p>
@@ -668,7 +712,7 @@ const CustomerStatement: React.FC = () => {
                 </tfoot>
               </table>
               <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-700">
-                Nota: Os valores pagos aparecem na coluna Credito da mesma linha do orcamento correspondente.
+                Nota: Orçamentos mostram o valor pago acumulado na coluna Crédito. Obras (pacote fechado) exibem cada recebimento como linha separada de crédito.
               </div>
             </div>
           </div>
