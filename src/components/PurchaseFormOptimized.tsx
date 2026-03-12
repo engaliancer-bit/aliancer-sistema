@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, memo } from 'react';
-import { Plus, Trash2, Save, X } from 'lucide-react';
+import { Plus, Trash2, Save, X, AlertCircle, RefreshCw } from 'lucide-react';
 import VirtualizedMaterialSelector from './VirtualizedMaterialSelector';
 
 interface PurchaseItem {
@@ -34,6 +34,8 @@ interface PurchaseItemRowProps {
   onRemove: (id: string) => void;
   subtotal: number;
   getCategoryTypeLabel: (type: string) => string;
+  hasUnitMismatch: boolean;
+  onConvertToTonnes: (id: string) => void;
 }
 
 const PurchaseItemRow = memo(({
@@ -54,9 +56,12 @@ const PurchaseItemRow = memo(({
   onRemove,
   subtotal,
   getCategoryTypeLabel,
+  hasUnitMismatch,
+  onConvertToTonnes,
 }: PurchaseItemRowProps) => {
   return (
-    <tr className="hover:bg-gray-50">
+    <React.Fragment>
+    <tr className={`hover:bg-gray-50 ${hasUnitMismatch ? 'bg-orange-50' : ''}`}>
       <td className="px-4 py-3 border-b">
         <VirtualizedMaterialSelector
           value={item.product_name}
@@ -172,13 +177,39 @@ const PurchaseItemRow = memo(({
         </button>
       </td>
     </tr>
+    {hasUnitMismatch && (
+      <tr className="bg-orange-50">
+        <td colSpan={10} className="px-4 pb-2 border-b">
+          <div className="flex items-center justify-between gap-3 bg-orange-100 border border-orange-300 rounded-lg px-3 py-2">
+            <div className="flex items-center gap-2 text-orange-800 text-xs">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 text-orange-600" />
+              <span>
+                <strong>Atencao:</strong> "{item.product_name}" e cadastrado em <strong>toneladas (t)</strong>.
+                A quantidade {item.quantity.toLocaleString('pt-BR')} parece estar em kg.
+                Deseja converter para <strong>{(item.quantity / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} t</strong>?
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onConvertToTonnes(item.id)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-600 text-white text-xs rounded-lg hover:bg-orange-700 transition-colors flex-shrink-0 font-medium"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Converter para toneladas
+            </button>
+          </div>
+        </td>
+      </tr>
+    )}
+    </React.Fragment>
   );
 }, (prevProps, nextProps) => {
   return (
     prevProps.item === nextProps.item &&
     prevProps.subtotal === nextProps.subtotal &&
     prevProps.suppliers === nextProps.suppliers &&
-    prevProps.costCategories === nextProps.costCategories
+    prevProps.costCategories === nextProps.costCategories &&
+    prevProps.hasUnitMismatch === nextProps.hasUnitMismatch
   );
 });
 
@@ -300,6 +331,30 @@ export default function PurchaseFormOptimized({
   const onNotesChange = useCallback((id: string, value: string) => {
     updateItem(id, 'notes', value);
   }, [updateItem]);
+
+  const onConvertToTonnes = useCallback((id: string) => {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              quantity: Math.round((item.quantity / 1000) * 1000) / 1000,
+              unit: 't',
+            }
+          : item
+      )
+    );
+  }, []);
+
+  const itemMismatchMap = useMemo(() => {
+    return items.reduce((acc, item) => {
+      acc[item.id] =
+        item.unit === 'kg' &&
+        item.quantity > 999 &&
+        item.material_id !== undefined;
+      return acc;
+    }, {} as Record<string, boolean>);
+  }, [items]);
 
   const itemSubtotals = useMemo(() => {
     return items.reduce((acc, item) => {
@@ -431,6 +486,8 @@ export default function PurchaseFormOptimized({
                   onRemove={removeItem}
                   subtotal={itemSubtotals[item.id] || 0}
                   getCategoryTypeLabel={getCategoryTypeLabel}
+                  hasUnitMismatch={itemMismatchMap[item.id] || false}
+                  onConvertToTonnes={onConvertToTonnes}
                 />
               ))}
             </tbody>

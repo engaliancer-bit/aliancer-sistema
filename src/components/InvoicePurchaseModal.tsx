@@ -1,5 +1,5 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
-import { Plus, Trash2, Save, ShoppingCart, X, FileText, CreditCard, Calendar, AlertCircle } from 'lucide-react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import { Plus, Trash2, Save, ShoppingCart, X, FileText, CreditCard, Calendar, AlertCircle, RefreshCw } from 'lucide-react';
 import VirtualizedMaterialSelector from './VirtualizedMaterialSelector';
 import { supabase } from '../lib/supabase';
 
@@ -185,6 +185,31 @@ export default function InvoicePurchaseModal({
     setItems(prev => prev.map(item =>
       item.id === id ? { ...item, material_id: undefined, product_name: '' } : item
     ));
+  }, []);
+
+  const getMaterialRegisteredUnit = useCallback((materialId?: string): string | undefined => {
+    if (!materialId) return undefined;
+    return allMaterials.find(m => m.id === materialId)?.unit;
+  }, [allMaterials]);
+
+  const hasUnitMismatch = useCallback((item: InvoiceItem): boolean => {
+    const registeredUnit = getMaterialRegisteredUnit(item.material_id);
+    return (
+      registeredUnit === 't' &&
+      item.unit === 'kg' &&
+      item.quantity > 999
+    );
+  }, [getMaterialRegisteredUnit]);
+
+  const convertItemToTonnes = useCallback((id: string) => {
+    setItems(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      return {
+        ...item,
+        quantity: Math.round((item.quantity / 1000) * 1000) / 1000,
+        unit: 't',
+      };
+    }));
   }, []);
 
   const itemSubtotals = useMemo(() => {
@@ -410,8 +435,10 @@ export default function InvoicePurchaseModal({
                 <tbody>
                   {items.map((item) => {
                     const missingCategory = item.product_name.trim() !== '' && item.quantity > 0 && item.unit_cost > 0 && !item.item_category;
+                    const unitMismatch = hasUnitMismatch(item);
                     return (
-                      <tr key={item.id} className={`hover:bg-gray-50 ${missingCategory ? 'bg-amber-50' : ''}`}>
+                      <React.Fragment key={item.id}>
+                      <tr className={`hover:bg-gray-50 ${missingCategory ? 'bg-amber-50' : ''} ${unitMismatch ? 'bg-orange-50' : ''}`}>
                         <td className="px-3 py-2 border-b">
                           <VirtualizedMaterialSelector
                             value={item.product_name}
@@ -502,6 +529,31 @@ export default function InvoicePurchaseModal({
                           </button>
                         </td>
                       </tr>
+                      {unitMismatch && (
+                        <tr key={`${item.id}-warn`} className="bg-orange-50">
+                          <td colSpan={8} className="px-3 pb-2 border-b">
+                            <div className="flex items-center justify-between gap-3 bg-orange-100 border border-orange-300 rounded-lg px-3 py-2">
+                              <div className="flex items-center gap-2 text-orange-800 text-xs">
+                                <AlertCircle className="w-4 h-4 flex-shrink-0 text-orange-600" />
+                                <span>
+                                  <strong>Atencao:</strong> "{item.product_name}" e cadastrado em <strong>toneladas (t)</strong>.
+                                  A quantidade {item.quantity.toLocaleString('pt-BR')} parece estar em kg.
+                                  Deseja converter para <strong>{(item.quantity / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} t</strong>?
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => convertItemToTonnes(item.id)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-600 text-white text-xs rounded-lg hover:bg-orange-700 transition-colors flex-shrink-0 font-medium"
+                              >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                Converter para toneladas
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
