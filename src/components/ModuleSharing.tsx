@@ -12,7 +12,7 @@ interface Module {
 
 const AVAILABLE_MODULES: Module[] = [
   { id: 'products', name: 'Produtos', category: 'factory', icon: '📦', description: 'Cadastro e gestão de produtos' },
-  { id: 'molds', name: 'Moldes', category: 'factory', icon: '🔲', description: 'Cadastro de formas e moldes' },
+  { id: 'molds', name: 'Fôrmas', category: 'factory', icon: '🔲', description: 'Cadastro de formas e moldes' },
   { id: 'materials', name: 'Insumos/Compras', category: 'factory', icon: '💧', description: 'Gestão de materiais e compras' },
   { id: 'recipes', name: 'Traços', category: 'factory', icon: '⚗️', description: 'Cadastro de traços de concreto' },
   { id: 'production', name: 'Produção', category: 'factory', icon: '📋', description: 'Acompanhamento da produção diária' },
@@ -26,22 +26,20 @@ const AVAILABLE_MODULES: Module[] = [
   { id: 'ribbed-slab-quote', name: 'Orçamento de Laje Treliçada', category: 'factory', icon: '🏗️', description: 'Orçamentos de lajes treliçadas' },
   { id: 'inventory', name: 'Estoque Produtos', category: 'factory', icon: '📦', description: 'Controle de estoque de produtos' },
   { id: 'material-inventory', name: 'Estoque Insumos', category: 'factory', icon: '💧', description: 'Controle de estoque de insumos' },
-  { id: 'stock-alerts', name: 'Alerta de Estoque', category: 'factory', icon: '⚠️', description: 'Alertas de estoque baixo' },
   { id: 'suppliers', name: 'Fornecedores', category: 'factory', icon: '🏢', description: 'Cadastro de fornecedores' },
-  { id: 'tracking', name: 'QR Codes', category: 'factory', icon: '📱', description: 'Rastreamento por QR Code' },
   { id: 'employees', name: 'Colaboradores', category: 'factory', icon: '👥', description: 'Gestão de colaboradores' },
   { id: 'production-costs', name: 'Custos de Produção', category: 'factory', icon: '📊', description: 'Análise de custos' },
   { id: 'indirect-costs', name: 'Financeiro', category: 'factory', icon: '💰', description: 'Gestão financeira e custos indiretos' },
   { id: 'cashflow', name: 'Receitas/Despesas', category: 'factory', icon: '💵', description: 'Fluxo de caixa detalhado' },
   { id: 'sales-prices', name: 'Tabela de Preços', category: 'factory', icon: '🏷️', description: 'Tabela de preços de venda' },
-  { id: 'dashboard', name: 'Metas', category: 'factory', icon: '🎯', description: 'Metas e indicadores' },
   { id: 'sales-report', name: 'Relatório de Produção', category: 'factory', icon: '📊', description: 'Relatórios gerenciais' },
-  { id: 'customer-statement', name: 'Extrato do Cliente', category: 'factory', icon: '📄', description: 'Extrato financeiro e histórico do cliente' },
+  { id: 'dashboard', name: 'Metas', category: 'factory', icon: '🎯', description: 'Metas e indicadores' },
 
   { id: 'eng-customers', name: 'Clientes', category: 'engineering', icon: '👤', description: 'Clientes de engenharia' },
   { id: 'eng-properties', name: 'Imóveis', category: 'engineering', icon: '🏠', description: 'Gestão de propriedades' },
   { id: 'eng-projects', name: 'Projetos', category: 'engineering', icon: '📐', description: 'Projetos de engenharia' },
   { id: 'eng-finance', name: 'Receitas/Despesas', category: 'engineering', icon: '💰', description: 'Controle financeiro de receitas e despesas' },
+  { id: 'eng-meetings', name: 'Reuniões', category: 'engineering', icon: '📅', description: 'Agendamento e gestão de reuniões' },
   { id: 'eng-services', name: 'Projetos (Templates)', category: 'engineering', icon: '🏷️', description: 'Templates e serviços padrão de engenharia' },
   { id: 'eng-employees', name: 'Colaboradores', category: 'engineering', icon: '👥', description: 'Colaboradores de engenharia' },
   { id: 'eng-ai-docs', name: 'Documentos IA', category: 'engineering', icon: '📄', description: 'Geração de documentos técnicos com IA' },
@@ -284,7 +282,7 @@ export default function ModuleSharing() {
                     <strong>Como descobrir seu IP:</strong><br/>
                     • Windows: abra CMD e digite <code className="bg-gray-100 px-1 rounded">ipconfig</code><br/>
                     • Mac/Linux: abra Terminal e digite <code className="bg-gray-100 px-1 rounded">ifconfig</code><br/>
-                    • Procure por "IPv4" ou "inet" - será algo como 192.168.x.x
+                    • Procure por "IPv4\" ou "inet" - será algo como 192.168.x.x
                   </p>
                 </div>
               </div>
