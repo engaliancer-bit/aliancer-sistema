@@ -2,6 +2,11 @@ import { useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { leakDetector } from '../lib/leakDetector';
 import { isStabilityMode } from '../lib/realtimeConfig';
+import {
+  recordRealtimeEvent,
+  registerActiveChannel,
+  unregisterActiveChannel,
+} from '../lib/performanceMonitor';
 
 export interface RealtimeEvent {
   eventType: 'INSERT' | 'UPDATE' | 'DELETE';
@@ -55,6 +60,9 @@ export function useRealtimeChannel({
 
     activeChannels.set(channelName, 1);
 
+    // Register in global performance monitor so DiagnosticsPanel can show active channels
+    registerActiveChannel(channelName, tables);
+
     if (import.meta.env.DEV) {
       leakDetector?.realtimeChannels?.add?.(channelName);
     }
@@ -62,7 +70,14 @@ export function useRealtimeChannel({
     const flush = () => {
       if (pendingEventsRef.current.length === 0) return;
       const batch = pendingEventsRef.current.splice(0);
+      // Measure how long it takes to process the batch in the caller's callback
+      const t0 = performance.now();
       onBatchEventsRef.current(batch);
+      const processingMs = Math.round(performance.now() - t0);
+      // Record event count + processing time for each channel event
+      for (let i = 0; i < batch.length; i++) {
+        recordRealtimeEvent(channelName, i === 0 ? processingMs : undefined);
+      }
     };
 
     const scheduleFlush = () => {
@@ -101,6 +116,9 @@ export function useRealtimeChannel({
       const count = activeChannels.get(channelName) ?? 1;
       if (count <= 1) activeChannels.delete(channelName);
       else activeChannels.set(channelName, count - 1);
+
+      // Unregister from global performance monitor
+      unregisterActiveChannel(channelName);
 
       if (import.meta.env.DEV) {
         leakDetector?.realtimeChannels?.delete?.(channelName);

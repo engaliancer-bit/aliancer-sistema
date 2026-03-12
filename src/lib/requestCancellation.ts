@@ -98,3 +98,15 @@ export function withRequestCancellation<T, R extends any[]>(
 setInterval(() => {
   cleanupStaleRequests();
 }, 10000);
+
+// Wire pending request snapshot into performanceMonitor so generateReport() includes it.
+// Deferred import avoids circular-dependency at module load time.
+import('./performanceMonitor').then(({ setRequestSnapshotProvider }) => {
+  setRequestSnapshotProvider(() => {
+    const now = Date.now();
+    return Array.from(pendingRequests.values()).map(r => ({
+      key: r.key,
+      ageMs: now - r.timestamp,
+    }));
+  });
+});

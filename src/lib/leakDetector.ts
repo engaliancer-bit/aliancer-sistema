@@ -126,6 +126,10 @@ class LeakDetector {
     }, 10000);
   }
 
+  public get realtimeChannels(): Set<string> {
+    return this.stats.realtimeChannels;
+  }
+
   public getStats() {
     return {
       intervals: this.stats.intervals.size,
@@ -149,4 +153,20 @@ export const leakDetector = import.meta.env.PROD ? null : new LeakDetector();
 // Expor no console
 if (!import.meta.env.PROD) {
   (window as any).__leakDetector = leakDetector;
+}
+
+// Wire leak stats into performanceMonitor so generateReport() can include them.
+// Import is deferred to avoid circular-dependency issues at module load time.
+if (!import.meta.env.PROD && leakDetector) {
+  import('./performanceMonitor').then(({ setLeakStatsProvider }) => {
+    setLeakStatsProvider(() => {
+      const s = leakDetector!.getStats();
+      return {
+        intervals: s.intervals,
+        timeouts: s.timeouts,
+        totalListeners: s.totalListeners,
+        realtimeChannelsTracked: leakDetector!.realtimeChannels?.size ?? 0,
+      };
+    });
+  });
 }
