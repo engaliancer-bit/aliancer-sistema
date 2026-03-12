@@ -93,11 +93,14 @@ export default function MeetingNew({ onBack, onCreated }: MeetingNewProps) {
         project_id: projectId || null,
         status: 'imported',
       };
+      console.log('Dados enviados:', payload);
       const created = await createMeeting(payload);
       setToast({ message: 'Reunião criada com sucesso!', type: 'success' });
       setTimeout(() => onCreated(created.id), 600);
-    } catch {
-      setToast({ message: 'Erro ao salvar a reunião. Tente novamente.', type: 'error' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
+      console.error('Detalhes do erro:', error);
+      setToast({ message: `Erro ao salvar: ${message}`, type: 'error' });
     } finally {
       setSaving(false);
     }

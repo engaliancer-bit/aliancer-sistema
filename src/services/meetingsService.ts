@@ -31,6 +31,8 @@ export async function getMeetingById(id: string): Promise<MeetingDetail> {
 }
 
 export async function createMeeting(data: CreateMeetingData): Promise<Meeting> {
+  const { data: { user } } = await supabase.auth.getUser();
+
   const { data: created, error } = await supabase
     .from('meetings')
     .insert({
@@ -41,11 +43,12 @@ export async function createMeeting(data: CreateMeetingData): Promise<Meeting> {
       summary: data.summary ?? '',
       source: data.source,
       status: data.status ?? 'imported',
+      created_by: user?.id ?? null,
     })
     .select()
     .single();
 
-  if (error) throw error;
+  if (error) throw new Error(error.message || 'Erro desconhecido ao salvar no banco');
   return created;
 }
 
