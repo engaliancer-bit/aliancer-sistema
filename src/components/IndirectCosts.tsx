@@ -4,6 +4,7 @@ import { Plus, Edit2, Trash2, TrendingUp, DollarSign, Package, Check, X, FileTex
 import { useProgressiveLoading } from '../hooks/useProgressiveLoading';
 import { FormSkeleton, TableSkeleton, SkeletonLoader } from './SkeletonLoader';
 import PurchaseFormOptimized from './PurchaseFormOptimized';
+import PurchaseEditModal from './PurchaseEditModal';
 
 interface IndirectCost {
   id: string;
@@ -43,6 +44,7 @@ interface CostCategory {
 
 interface PendingPurchase {
   id: string;
+  purchase_id?: string;
   material_id: string;
   supplier_id: string;
   nfe_key: string;
@@ -133,6 +135,7 @@ export default function IndirectCosts() {
 
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [showDirectCostForm, setShowDirectCostForm] = useState(false);
+  const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
 
   const {
     isBasicDataLoaded,
@@ -366,6 +369,7 @@ export default function IndirectCosts() {
     // Transformar para o formato esperado pelo componente
     const transformed = (data || []).map((item: any) => ({
       id: item.id,
+      purchase_id: item.purchases?.id || null,
       material_id: '',
       supplier_id: item.purchases?.supplier_id || '',
       nfe_key: item.purchases?.invoice_number || '',
@@ -436,6 +440,7 @@ export default function IndirectCosts() {
 
     const transformed = (data || []).map((item: any) => ({
       id: item.id,
+      purchase_id: item.purchases?.id || null,
       material_id: '',
       supplier_id: item.purchases?.supplier_id || '',
       nfe_key: item.purchases?.invoice_number || '',
@@ -1298,6 +1303,15 @@ export default function IndirectCosts() {
                             <div className="flex items-center gap-2 mb-2">
                               <Package className="w-5 h-5 text-gray-600" />
                               <h3 className="font-bold text-gray-900">{purchase.product_name}</h3>
+                              {purchase.purchase_id && (
+                                <button
+                                  onClick={() => setEditingPurchaseId(purchase.purchase_id!)}
+                                  className="ml-auto p-1.5 text-gray-400 hover:text-[#0A7EC2] hover:bg-blue-50 rounded-lg transition-colors"
+                                  title="Editar compra"
+                                >
+                                  <Edit2 className="w-4 h-4" />
+                                </button>
+                              )}
                             </div>
                             <div className="grid grid-cols-2 gap-4 text-sm">
                               <div className="flex items-center gap-2 text-gray-600">
@@ -1526,6 +1540,8 @@ export default function IndirectCosts() {
                         <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">
                           Tipo
                         </th>
+                        <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase w-12">
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200 bg-white">
@@ -1578,12 +1594,23 @@ export default function IndirectCosts() {
                               )}
                             </div>
                           </td>
+                          <td className="px-4 py-4 text-center">
+                            {purchase.purchase_id && (
+                              <button
+                                onClick={() => setEditingPurchaseId(purchase.purchase_id)}
+                                className="p-1.5 text-gray-400 hover:text-[#0A7EC2] hover:bg-blue-50 rounded-lg transition-colors"
+                                title="Editar compra"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                     <tfoot className="bg-gray-50">
                       <tr>
-                        <td colspan="6" className="px-6 py-4 text-sm font-semibold text-gray-900 text-right">
+                        <td colSpan={6} className="px-6 py-4 text-sm font-semibold text-gray-900 text-right">
                           Total Geral:
                         </td>
                         <td className="px-6 py-4 text-sm font-bold text-[#0A7EC2] text-right">
@@ -1591,6 +1618,7 @@ export default function IndirectCosts() {
                             directCosts.reduce((sum, p) => sum + p.total_cost, 0)
                           )}
                         </td>
+                        <td></td>
                         <td></td>
                       </tr>
                     </tfoot>
@@ -1668,6 +1696,8 @@ export default function IndirectCosts() {
                         <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                           Total
                         </th>
+                        <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase w-12">
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200 bg-white">
@@ -1701,12 +1731,23 @@ export default function IndirectCosts() {
                           <td className="px-6 py-4 text-sm text-right font-semibold text-gray-900">
                             {formatCurrency(purchase.total_cost)}
                           </td>
+                          <td className="px-4 py-4 text-center">
+                            {purchase.purchase_id && (
+                              <button
+                                onClick={() => setEditingPurchaseId(purchase.purchase_id)}
+                                className="p-1.5 text-gray-400 hover:text-[#0A7EC2] hover:bg-blue-50 rounded-lg transition-colors"
+                                title="Editar compra"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                     <tfoot className="bg-gray-50">
                       <tr>
-                        <td colspan="6" className="px-6 py-4 text-sm font-semibold text-gray-900 text-right">
+                        <td colSpan={6} className="px-6 py-4 text-sm font-semibold text-gray-900 text-right">
                           Total Geral:
                         </td>
                         <td className="px-6 py-4 text-sm font-bold text-[#0A7EC2] text-right">
@@ -1714,6 +1755,7 @@ export default function IndirectCosts() {
                             indirectCostsClassified.reduce((sum, p) => sum + p.total_cost, 0)
                           )}
                         </td>
+                        <td></td>
                       </tr>
                     </tfoot>
                   </table>
@@ -2262,6 +2304,18 @@ export default function IndirectCosts() {
             )}
           </div>
         </div>
+      )}
+
+      {editingPurchaseId && (
+        <PurchaseEditModal
+          purchaseId={editingPurchaseId}
+          suppliers={suppliers}
+          onSave={() => {
+            setEditingPurchaseId(null);
+            loadData();
+          }}
+          onClose={() => setEditingPurchaseId(null)}
+        />
       )}
     </div>
   );

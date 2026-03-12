@@ -6,6 +6,8 @@ import autoTable from 'jspdf-autotable';
 import MaterialSuppliersManager from './MaterialSuppliersManager';
 import XMLImporter from './XMLImporter';
 import InvoicePurchaseModal, { type InvoicePurchaseData } from './InvoicePurchaseModal';
+import PurchaseEditModal from './PurchaseEditModal';
+import VirtualizedPurchasesList from './VirtualizedPurchasesList';
 import { usePagination } from '../hooks/usePagination';
 import { useAbortController } from '../hooks/useAbortController';
 // [DEBOUNCE] useAdvancedDebounce replaces simple useDebounce — provides maxWait guard
@@ -245,6 +247,8 @@ export default function Materials() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [showPurchasePriceConfirm, setShowPurchasePriceConfirm] = useState(false);
   const [pendingPurchasePrice, setPendingPurchasePrice] = useState<{ materialId: string; newPrice: number; currentPrice: number } | null>(null);
+  const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
+  const [showPurchaseHistory, setShowPurchaseHistory] = useState(false);
 
 
   const { signal } = useAbortController();
@@ -2580,6 +2584,29 @@ export default function Materials() {
         </div>
       )}
 
+      {/* Seção: Histórico de Compras */}
+      {!editingId && !showNewMaterialForm && (
+        <div className="bg-white rounded-lg shadow-md overflow-hidden">
+          <button
+            onClick={() => setShowPurchaseHistory(prev => !prev)}
+            className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <ShoppingCart className="w-5 h-5 text-[#0A7EC2]" />
+              <span className="text-base font-semibold text-gray-800">Historico de Compras</span>
+            </div>
+            <ChevronRight className={`w-5 h-5 text-gray-400 transition-transform ${showPurchaseHistory ? 'rotate-90' : ''}`} />
+          </button>
+          {showPurchaseHistory && (
+            <div className="border-t border-gray-100">
+              <VirtualizedPurchasesList
+                onEdit={(purchase) => setEditingPurchaseId(purchase.id)}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Modal: Confirmar atualizacao de preco via compra */}
       {showPurchasePriceConfirm && pendingPurchasePrice && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -2629,6 +2656,18 @@ export default function Materials() {
             </div>
           </div>
         </div>
+      )}
+
+      {editingPurchaseId && (
+        <PurchaseEditModal
+          purchaseId={editingPurchaseId}
+          suppliers={suppliers}
+          onSave={() => {
+            setEditingPurchaseId(null);
+            loadData();
+          }}
+          onClose={() => setEditingPurchaseId(null)}
+        />
       )}
     </div>
   );
