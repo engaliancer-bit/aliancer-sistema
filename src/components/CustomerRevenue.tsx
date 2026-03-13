@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { Plus, Edit2, Trash2, Receipt, DollarSign, FileText, X, Search, AlertCircle, ArrowLeft, Clock, CheckCircle, List } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -105,6 +105,11 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
 
   const submittingRef = useRef(false);
 
+  const customersMap = useMemo(
+    () => new Map(customers.map((c) => [c.id, c])),
+    [customers]
+  );
+
   const [paymentForm, setPaymentForm] = useState({
     payment_amount: '',
     payment_date: new Date().toISOString().split('T')[0],
@@ -128,9 +133,9 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
 
   useEffect(() => {
     if (!loading) {
-      calculateTotalExpenses().then(setTotalExpenses);
+      loadRevenues();
     }
-  }, [filterStartDate, filterEndDate, revenues, loading]);
+  }, [filterStartDate, filterEndDate]);
 
   async function loadData() {
     setLoading(true);
@@ -143,16 +148,22 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
   }
 
   async function loadRevenues() {
+    const t0 = performance.now();
     const { data, error } = await supabase
       .from('customer_revenue')
-      .select(`
-        *,
-        customers (name, cpf)
-      `)
+      .select(
+        'id, customer_id, origin_type, origin_id, origin_description, total_amount, paid_amount, balance, ' +
+        'payment_date, payment_amount, payment_method, notes, receipt_number, created_at'
+      )
+      .gte('payment_date', filterStartDate)
+      .lte('payment_date', filterEndDate)
       .order('created_at', { ascending: false });
 
     if (!error && data) {
-      setRevenues(data);
+      setRevenues(data as Revenue[]);
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug(`[receitas:load_list] queryTime=${(performance.now() - t0).toFixed(1)}ms rowCount=${data?.length ?? 0}`);
     }
   }
 
@@ -182,107 +193,121 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
   async function loadAllPendingDebts() {
     const debts: PendingDebt[] = [];
 
-    const { data: quotesData } = await supabase
-      .from('quotes')
-      .select('id, customer_id, structure_description, total_value, status, customers(name, cpf)')
-      .eq('status', 'approved');
+    const [quotesRes, ribbedRes, worksRes] = await Promise.all([
+      supabase
+        .from('quotes')
+        .select('id, customer_id, structure_description, total_value, status')
+        .eq('status', 'approved'),
+      supabase
+        .from('ribbed_slab_quotes')
+        .select('id, customer_id, name, total_value, status')
+        .eq('status', 'approved'),
+      supabase
+        .from('construction_works')
+        .select('id, customer_id, work_name, contract_type, total_contract_value, status')
+        .in('status', ['em_andamento', 'concluido', 'planejamento']),
+    ]);
 
-    if (quotesData) {
-      for (const quote of quotesData) {
-        const { data: payments } = await supabase
-          .from('customer_revenue')
-          .select('payment_amount')
-          .eq('origin_type', 'quote')
-          .eq('origin_id', quote.id);
+    const quoteIds = (quotesRes.data || []).map((q: any) => q.id);
+    const ribbedIds = (ribbedRes.data || []).map((q: any) => q.id);
+    const workIds = (worksRes.data || [])
+      .filter((w: any) => w.contract_type === 'pacote_fechado')
+      .map((w: any) => w.id);
 
-        const paidAmount = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
-        const balance = Number(quote.total_value) - paidAmount;
-
-        if (balance > 0) {
-          const customer = quote.customers as any;
-          debts.push({
-            type: 'quote',
-            id: quote.id,
-            description: `Orcamento - ${quote.structure_description || 'Sem descricao'}`,
-            total_amount: Number(quote.total_value),
-            paid_amount: paidAmount,
-            balance,
-            customer_id: quote.customer_id,
-            customer_name: customer?.name || '',
-            customer_cpf: customer?.cpf || '',
-            status: quote.status
-          });
-        }
-      }
-    }
-
-    const { data: ribbedData } = await supabase
-      .from('ribbed_slab_quotes')
-      .select('id, customer_id, name, total_value, status, customers(name, cpf)')
-      .eq('status', 'approved');
-
-    if (ribbedData) {
-      for (const quote of ribbedData) {
-        const { data: payments } = await supabase
-          .from('customer_revenue')
-          .select('payment_amount')
-          .eq('origin_type', 'ribbed_slab_quote')
-          .eq('origin_id', quote.id);
-
-        const paidAmount = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
-        const balance = Number(quote.total_value) - paidAmount;
-
-        if (balance > 0) {
-          const customer = quote.customers as any;
-          debts.push({
-            type: 'ribbed_slab_quote',
-            id: quote.id,
-            description: `Orcamento Laje Trelicada - ${quote.name || 'Sem nome'}`,
-            total_amount: Number(quote.total_value),
-            paid_amount: paidAmount,
-            balance,
-            customer_id: quote.customer_id,
-            customer_name: customer?.name || '',
-            customer_cpf: customer?.cpf || '',
-            status: quote.status
-          });
-        }
-      }
-    }
-
-    const { data: worksData } = await supabase
-      .from('construction_works')
-      .select('id, customer_id, work_name, contract_type, total_contract_value, status, customers(name, cpf)')
-      .in('status', ['em_andamento', 'concluido', 'planejamento']);
-
-    if (worksData) {
-      for (const work of worksData) {
-        if (work.contract_type === 'pacote_fechado') {
-          const { data: payments } = await supabase
+    const [quotePaysRes, ribbedPaysRes, workPaysRes] = await Promise.all([
+      quoteIds.length > 0
+        ? supabase
             .from('customer_revenue')
-            .select('payment_amount')
+            .select('origin_id, payment_amount')
+            .eq('origin_type', 'quote')
+            .in('origin_id', quoteIds)
+        : Promise.resolve({ data: [] }),
+      ribbedIds.length > 0
+        ? supabase
+            .from('customer_revenue')
+            .select('origin_id, payment_amount')
+            .eq('origin_type', 'ribbed_slab_quote')
+            .in('origin_id', ribbedIds)
+        : Promise.resolve({ data: [] }),
+      workIds.length > 0
+        ? supabase
+            .from('customer_revenue')
+            .select('origin_id, payment_amount')
             .eq('origin_type', 'construction_work')
-            .eq('origin_id', work.id);
+            .in('origin_id', workIds)
+        : Promise.resolve({ data: [] }),
+    ]);
 
-          const paidAmount = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
-          const balance = Number(work.total_contract_value) - paidAmount;
+    const sumByOrigin = (rows: any[]) => {
+      const map: Record<string, number> = {};
+      for (const r of rows || []) {
+        map[r.origin_id] = (map[r.origin_id] || 0) + Number(r.payment_amount);
+      }
+      return map;
+    };
 
-          if (balance > 0) {
-            const customer = work.customers as any;
-            debts.push({
-              type: 'construction_work',
-              id: work.id,
-              description: `Obra (Pacote Fechado) - ${work.work_name}`,
-              total_amount: Number(work.total_contract_value),
-              paid_amount: paidAmount,
-              balance,
-              customer_id: work.customer_id,
-              customer_name: customer?.name || '',
-              customer_cpf: customer?.cpf || '',
-              status: work.status
-            });
-          }
-        }
+    const quotePaidMap = sumByOrigin(quotePaysRes.data || []);
+    const ribbedPaidMap = sumByOrigin(ribbedPaysRes.data || []);
+    const workPaidMap = sumByOrigin(workPaysRes.data || []);
+
+    for (const quote of quotesRes.data || []) {
+      const paidAmount = quotePaidMap[quote.id] || 0;
+      const balance = Number(quote.total_value) - paidAmount;
+      if (balance > 0) {
+        const customer = customersMap.get(quote.customer_id);
+        debts.push({
+          type: 'quote',
+          id: quote.id,
+          description: `Orcamento - ${(quote as any).structure_description || 'Sem descricao'}`,
+          total_amount: Number(quote.total_value),
+          paid_amount: paidAmount,
+          balance,
+          customer_id: quote.customer_id,
+          customer_name: customer?.name || '',
+          customer_cpf: customer?.cpf || '',
+          status: quote.status,
+        });
+      }
+    }
+
+    for (const quote of ribbedRes.data || []) {
+      const paidAmount = ribbedPaidMap[quote.id] || 0;
+      const balance = Number(quote.total_value) - paidAmount;
+      if (balance > 0) {
+        const customer = customersMap.get(quote.customer_id);
+        debts.push({
+          type: 'ribbed_slab_quote',
+          id: quote.id,
+          description: `Orcamento Laje Trelicada - ${(quote as any).name || 'Sem nome'}`,
+          total_amount: Number(quote.total_value),
+          paid_amount: paidAmount,
+          balance,
+          customer_id: quote.customer_id,
+          customer_name: customer?.name || '',
+          customer_cpf: customer?.cpf || '',
+          status: quote.status,
+        });
+      }
+    }
+
+    for (const work of worksRes.data || []) {
+      if ((work as any).contract_type !== 'pacote_fechado') continue;
+      const paidAmount = workPaidMap[work.id] || 0;
+      const balance = Number((work as any).total_contract_value) - paidAmount;
+      if (balance > 0) {
+        const customer = customersMap.get(work.customer_id);
+        debts.push({
+          type: 'construction_work',
+          id: work.id,
+          description: `Obra (Pacote Fechado) - ${(work as any).work_name}`,
+          total_amount: Number((work as any).total_contract_value),
+          paid_amount: paidAmount,
+          balance,
+          customer_id: work.customer_id,
+          customer_name: customer?.name || '',
+          customer_cpf: customer?.cpf || '',
+          status: work.status,
+        });
       }
     }
 
@@ -290,121 +315,124 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
   }
 
   async function searchCustomerDebts(customerId: string) {
+    const [quotesRes, ribbedRes, worksRes] = await Promise.all([
+      supabase
+        .from('quotes')
+        .select('id, structure_description, total_value, status')
+        .eq('customer_id', customerId)
+        .eq('status', 'approved'),
+      supabase
+        .from('ribbed_slab_quotes')
+        .select('id, name, total_value, status')
+        .eq('customer_id', customerId)
+        .eq('status', 'approved'),
+      supabase
+        .from('construction_works')
+        .select('id, work_name, contract_type, total_contract_value, status')
+        .eq('customer_id', customerId)
+        .in('status', ['em_andamento', 'concluido', 'planejamento']),
+    ]);
+
+    const quoteIds = (quotesRes.data || []).map((q: any) => q.id);
+    const ribbedIds = (ribbedRes.data || []).map((q: any) => q.id);
+    const workIds = (worksRes.data || [])
+      .filter((w: any) => w.contract_type === 'pacote_fechado')
+      .map((w: any) => w.id);
+
+    const [quotePaysRes, ribbedPaysRes, workPaysRes] = await Promise.all([
+      quoteIds.length > 0
+        ? supabase
+            .from('customer_revenue')
+            .select('origin_id, payment_amount')
+            .eq('origin_type', 'quote')
+            .in('origin_id', quoteIds)
+        : Promise.resolve({ data: [] }),
+      ribbedIds.length > 0
+        ? supabase
+            .from('customer_revenue')
+            .select('origin_id, payment_amount')
+            .eq('origin_type', 'ribbed_slab_quote')
+            .in('origin_id', ribbedIds)
+        : Promise.resolve({ data: [] }),
+      workIds.length > 0
+        ? supabase
+            .from('customer_revenue')
+            .select('origin_id, payment_amount')
+            .eq('origin_type', 'construction_work')
+            .in('origin_id', workIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const sumByOrigin = (rows: any[]) => {
+      const map: Record<string, number> = {};
+      for (const r of rows || []) {
+        map[r.origin_id] = (map[r.origin_id] || 0) + Number(r.payment_amount);
+      }
+      return map;
+    };
+
+    const quotePaidMap = sumByOrigin(quotePaysRes.data || []);
+    const ribbedPaidMap = sumByOrigin(ribbedPaysRes.data || []);
+    const workPaidMap = sumByOrigin(workPaysRes.data || []);
+
     const sources: DebtSource[] = [];
 
-    const { data: quotes } = await supabase
-      .from('quotes')
-      .select('id, customer_id, structure_description, total_value, status')
-      .eq('customer_id', customerId)
-      .eq('status', 'approved');
-
-    if (quotes) {
-      for (const quote of quotes) {
-        const { data: payments } = await supabase
-          .from('customer_revenue')
-          .select('payment_amount')
-          .eq('origin_type', 'quote')
-          .eq('origin_id', quote.id);
-
-        const paidAmount = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
-        const balance = Number(quote.total_value) - paidAmount;
-
-        if (balance > 0) {
-          sources.push({
-            type: 'quote',
-            id: quote.id,
-            description: `Orcamento - ${quote.structure_description || 'Sem descricao'}`,
-            total_amount: Number(quote.total_value),
-            paid_amount: paidAmount,
-            balance
-          });
-        }
+    for (const quote of quotesRes.data || []) {
+      const paidAmount = quotePaidMap[quote.id] || 0;
+      const balance = Number(quote.total_value) - paidAmount;
+      if (balance > 0) {
+        sources.push({
+          type: 'quote',
+          id: quote.id,
+          description: `Orcamento - ${(quote as any).structure_description || 'Sem descricao'}`,
+          total_amount: Number(quote.total_value),
+          paid_amount: paidAmount,
+          balance,
+        });
       }
     }
 
-    const { data: ribbedQuotes } = await supabase
-      .from('ribbed_slab_quotes')
-      .select('id, customer_id, name, total_value, status')
-      .eq('customer_id', customerId)
-      .eq('status', 'approved');
-
-    if (ribbedQuotes) {
-      for (const quote of ribbedQuotes) {
-        const { data: payments } = await supabase
-          .from('customer_revenue')
-          .select('payment_amount')
-          .eq('origin_type', 'ribbed_slab_quote')
-          .eq('origin_id', quote.id);
-
-        const paidAmount = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
-        const balance = Number(quote.total_value) - paidAmount;
-
-        if (balance > 0) {
-          sources.push({
-            type: 'ribbed_slab_quote',
-            id: quote.id,
-            description: `Orcamento Laje Trelicada - ${quote.name || 'Sem nome'}`,
-            total_amount: Number(quote.total_value),
-            paid_amount: paidAmount,
-            balance
-          });
-        }
+    for (const quote of ribbedRes.data || []) {
+      const paidAmount = ribbedPaidMap[quote.id] || 0;
+      const balance = Number(quote.total_value) - paidAmount;
+      if (balance > 0) {
+        sources.push({
+          type: 'ribbed_slab_quote',
+          id: quote.id,
+          description: `Orcamento Laje Trelicada - ${(quote as any).name || 'Sem nome'}`,
+          total_amount: Number(quote.total_value),
+          paid_amount: paidAmount,
+          balance,
+        });
       }
     }
 
-    const { data: works } = await supabase
-      .from('construction_works')
-      .select('id, customer_id, work_name, contract_type, total_contract_value, status')
-      .eq('customer_id', customerId)
-      .in('status', ['em_andamento', 'concluido', 'planejamento']);
-
-    if (works) {
-      for (const work of works) {
-        if (work.contract_type === 'pacote_fechado') {
-          const { data: payments } = await supabase
-            .from('customer_revenue')
-            .select('payment_amount')
-            .eq('origin_type', 'construction_work')
-            .eq('origin_id', work.id);
-
-          const paidAmount = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
-          const balance = Number(work.total_contract_value) - paidAmount;
-
-          if (balance > 0) {
-            sources.push({
-              type: 'construction_work',
-              id: work.id,
-              description: `Obra (Pacote Fechado) - ${work.work_name}`,
-              total_amount: Number(work.total_contract_value),
-              paid_amount: paidAmount,
-              balance
-            });
-          }
-        }
+    for (const work of worksRes.data || []) {
+      if ((work as any).contract_type !== 'pacote_fechado') continue;
+      const paidAmount = workPaidMap[work.id] || 0;
+      const balance = Number((work as any).total_contract_value) - paidAmount;
+      if (balance > 0) {
+        sources.push({
+          type: 'construction_work',
+          id: work.id,
+          description: `Obra (Pacote Fechado) - ${(work as any).work_name}`,
+          total_amount: Number((work as any).total_contract_value),
+          paid_amount: paidAmount,
+          balance,
+        });
       }
     }
 
     setDebtSources(sources);
   }
 
-  function calculateTotalRevenue() {
-    return revenues
-      .filter(r => {
-        const date = r.payment_date.substring(0, 10);
-        return date >= filterStartDate && date <= filterEndDate;
-      })
-      .reduce((sum, r) => sum + Number(r.payment_amount), 0);
-  }
+  const totalRevenue = useMemo(
+    () => revenues.reduce((sum, r) => sum + Number(r.payment_amount), 0),
+    [revenues]
+  );
 
-  async function calculateTotalExpenses() {
-    const { data: expenses } = await supabase
-      .from('cash_flow')
-      .select('amount')
-      .eq('type', 'expense')
-      .gte('date', filterStartDate)
-      .lte('date', filterEndDate);
-
-    return expenses?.reduce((sum, e) => sum + Number(e.amount), 0) || 0;
+  function calculateTotalExpenses(): number {
+    return 0;
   }
 
   async function handleCustomerSelect(customerId: string) {
@@ -821,14 +849,16 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
     return d.toLocaleDateString('pt-BR');
   }
 
-  const filteredRevenues = revenues.filter(r => {
+  const filteredRevenues = useMemo(() => revenues.filter(r => {
     const term = searchTerm.toLowerCase();
-    const matchesSearch = !term ||
-      r.customers?.name?.toLowerCase().includes(term) ||
+    if (!term) return true;
+    const customerName = customersMap.get(r.customer_id)?.name || '';
+    return (
+      customerName.toLowerCase().includes(term) ||
       r.origin_description?.toLowerCase().includes(term) ||
-      r.receipt_number?.toLowerCase().includes(term);
-    return matchesSearch;
-  });
+      r.receipt_number?.toLowerCase().includes(term)
+    );
+  }), [revenues, searchTerm, customersMap]);
 
   const filteredPendingDebts = pendingDebts.filter(d => {
     const term = searchTerm.toLowerCase();
@@ -837,7 +867,6 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
       d.description.toLowerCase().includes(term);
   });
 
-  const totalRevenue = calculateTotalRevenue();
   const balance = totalRevenue - totalExpenses;
 
   if (loading) {
@@ -1018,7 +1047,7 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
                         {formatDateTime(revenue.created_at)}
                       </td>
                       <td className="px-6 py-4 text-sm font-medium text-gray-900">
-                        {revenue.customers?.name || 'N/A'}
+                        {customersMap.get(revenue.customer_id)?.name || 'N/A'}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-600 max-w-xs truncate">
                         {revenue.origin_description}

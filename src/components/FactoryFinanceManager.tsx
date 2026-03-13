@@ -454,6 +454,7 @@ export default function FactoryFinanceManager({
       const from = page * PAGE_SIZE;
       const to = from + PAGE_SIZE - 1;
 
+      const queryStart = performance.now();
       const { data, error } = await measureAsync(
         'receitas:load_list',
         async () => {
@@ -462,8 +463,7 @@ export default function FactoryFinanceManager({
             .select(
               'id, date, type, description, amount, payment_method_id, cost_category_id, ' +
               'purchase_id, sale_id, payable_account_id, customer_revenue_id, customer_id, ' +
-              'construction_work_id, notes, reference, payment_status, payment_confirmed_date',
-              { count: 'exact' }
+              'construction_work_id, notes, reference, payment_status, payment_confirmed_date'
             )
             .eq('business_unit', 'factory')
             .order('date', { ascending: false })
@@ -476,11 +476,20 @@ export default function FactoryFinanceManager({
         },
         { module: 'receitas-despesas' }
       );
+      const queryTime = performance.now() - queryStart;
 
       if (controller.signal.aborted) return;
       if (error) throw error;
 
+      const transformStart = performance.now();
       const enriched = (data || []).map((row) => enrichEntry(row as Record<string, unknown>));
+      const transformTime = performance.now() - transformStart;
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug(
+          `[factory_finance.load] page=${page} queryTime=${queryTime.toFixed(1)}ms transformTime=${transformTime.toFixed(1)}ms rowCount=${enriched.length}`
+        );
+      }
 
       if (append) {
         setEntries((prev) => {
