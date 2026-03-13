@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Edit2, Trash2, Clock } from 'lucide-react';
+import { Plus, Edit2, Trash2, Clock, DollarSign, Check, SkipForward, AlertCircle, X } from 'lucide-react';
 
 interface Employee {
   id: string;
@@ -38,16 +38,36 @@ interface MonthlyExtraPayment {
   amount: number;
 }
 
+interface SalaryEntry {
+  cash_flow_id: string | null;
+  employee_id: string;
+  employee_name: string;
+  base_salary: number;
+  adjusted_amount: number;
+  due_date: string;
+  status: 'pending' | 'confirmed' | 'skipped';
+  description: string;
+  notes: string;
+}
+
+const PESSOAL_CATEGORY_ID = 'c415f5bd-959f-46bd-b497-008506007959';
+
 export default function Employees() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [overtimeRecords, setOvertimeRecords] = useState<OvertimeRecord[]>([]);
   const [payrollCharges, setPayrollCharges] = useState<PayrollCharge[]>([]);
   const [monthlyExtraPayments, setMonthlyExtraPayments] = useState<MonthlyExtraPayment[]>([]);
+  const [salaryEntries, setSalaryEntries] = useState<SalaryEntry[]>([]);
   const [showEmployeeForm, setShowEmployeeForm] = useState(false);
   const [showOvertimeForm, setShowOvertimeForm] = useState(false);
   const [showExtraPaymentForm, setShowExtraPaymentForm] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [editingEntry, setEditingEntry] = useState<SalaryEntry | null>(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [loadingSalary, setLoadingSalary] = useState(false);
+  const [savingEntry, setSavingEntry] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -77,6 +97,12 @@ export default function Employees() {
     loadPayrollCharges();
     loadMonthlyExtraPayments();
   }, [selectedMonth]);
+
+  useEffect(() => {
+    if (employees.length > 0) {
+      loadSalaryEntries();
+    }
+  }, [employees, selectedMonth]);
 
   async function loadEmployees() {
     const { data, error } = await supabase
@@ -138,6 +164,176 @@ export default function Employees() {
     }
 
     setMonthlyExtraPayments(data || []);
+  }
+
+  const loadSalaryEntries = useCallback(async () => {
+    setLoadingSalary(true);
+    const [year, month] = selectedMonth.split('-').map(Number);
+    const dueDate = `${selectedMonth}-05`;
+
+    const activeEmployees = employees.filter(e => e.active && (!(e as any).business_unit || (e as any).business_unit === 'factory'));
+
+    const referencePattern = `SALARIO-%-${selectedMonth}`;
+    const { data: existing, error } = await supabase
+      .from('cash_flow')
+      .select('id, description, amount, reference, payment_status, notes, due_date')
+      .eq('business_unit', 'factory')
+      .eq('type', 'expense')
+      .like('reference', referencePattern);
+
+    if (error) {
+      console.error('Error loading salary entries:', error);
+      setLoadingSalary(false);
+      return;
+    }
+
+    const existingMap: Record<string, any> = {};
+    for (const row of (existing || [])) {
+      if (row.reference) {
+        existingMap[row.reference] = row;
+      }
+    }
+
+    const entries: SalaryEntry[] = activeEmployees.map(emp => {
+      const ref = `SALARIO-${emp.id}-${selectedMonth}`;
+      const existingRow = existingMap[ref];
+      const monthLabel = new Date(`${selectedMonth}-01`).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+
+      if (existingRow) {
+        const isSkipped = existingRow.payment_status === 'skipped';
+        return {
+          cash_flow_id: existingRow.id,
+          employee_id: emp.id,
+          employee_name: emp.name,
+          base_salary: emp.base_salary,
+          adjusted_amount: existingRow.amount,
+          due_date: existingRow.due_date || dueDate,
+          status: isSkipped ? 'skipped' : 'confirmed',
+          description: existingRow.description,
+          notes: existingRow.notes || '',
+        };
+      }
+
+      return {
+        cash_flow_id: null,
+        employee_id: emp.id,
+        employee_name: emp.name,
+        base_salary: emp.base_salary,
+        adjusted_amount: emp.base_salary,
+        due_date: dueDate,
+        status: 'pending',
+        description: `Salario - ${emp.name} - ${monthLabel}`,
+        notes: '',
+      };
+    });
+
+    setSalaryEntries(entries);
+    setLoadingSalary(false);
+  }, [employees, selectedMonth]);
+
+  async function handleConfirmSalary(entry: SalaryEntry, amount: number, notes: string) {
+    setSavingEntry(entry.employee_id);
+    const ref = `SALARIO-${entry.employee_id}-${selectedMonth}`;
+    const monthLabel = new Date(`${selectedMonth}-01`).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    const description = `Salario - ${entry.employee_name} - ${monthLabel}`;
+
+    try {
+      if (entry.cash_flow_id) {
+        const { error } = await supabase
+          .from('cash_flow')
+          .update({
+            amount,
+            description,
+            notes,
+            payment_status: 'pendente',
+            due_date: entry.due_date,
+          })
+          .eq('id', entry.cash_flow_id);
+
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('cash_flow')
+          .insert([{
+            type: 'expense',
+            description,
+            amount,
+            date: entry.due_date,
+            due_date: entry.due_date,
+            business_unit: 'factory',
+            reference: ref,
+            payment_status: 'pendente',
+            category: 'pessoal',
+            cost_category_id: PESSOAL_CATEGORY_ID,
+            notes,
+          }]);
+
+        if (error) throw error;
+      }
+
+      await loadSalaryEntries();
+    } catch (err) {
+      console.error('Error confirming salary:', err);
+    } finally {
+      setSavingEntry(null);
+      setEditingEntry(null);
+    }
+  }
+
+  async function handleSkipSalary(entry: SalaryEntry) {
+    if (!confirm(`Tem certeza que deseja pular o salário de ${entry.employee_name} para este mês?`)) return;
+    setSavingEntry(entry.employee_id);
+    const ref = `SALARIO-${entry.employee_id}-${selectedMonth}`;
+    const monthLabel = new Date(`${selectedMonth}-01`).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+
+    try {
+      if (entry.cash_flow_id) {
+        const { error } = await supabase
+          .from('cash_flow')
+          .update({ payment_status: 'skipped', amount: 0 })
+          .eq('id', entry.cash_flow_id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('cash_flow')
+          .insert([{
+            type: 'expense',
+            description: `Salario - ${entry.employee_name} - ${monthLabel} (Pulado)`,
+            amount: 0,
+            date: entry.due_date,
+            due_date: entry.due_date,
+            business_unit: 'factory',
+            reference: ref,
+            payment_status: 'skipped',
+            category: 'pessoal',
+            cost_category_id: PESSOAL_CATEGORY_ID,
+          }]);
+        if (error) throw error;
+      }
+      await loadSalaryEntries();
+    } catch (err) {
+      console.error('Error skipping salary:', err);
+    } finally {
+      setSavingEntry(null);
+    }
+  }
+
+  async function handleDeleteSalaryEntry(entry: SalaryEntry) {
+    if (!entry.cash_flow_id) return;
+    if (!confirm(`Remover o lançamento de salário de ${entry.employee_name}? O colaborador voltará ao status "Pendente" para este mês.`)) return;
+
+    setSavingEntry(entry.employee_id);
+    const { error } = await supabase
+      .from('cash_flow')
+      .delete()
+      .eq('id', entry.cash_flow_id);
+
+    if (error) {
+      console.error('Error deleting salary entry:', error);
+    } else {
+      await loadSalaryEntries();
+    }
+    setSavingEntry(null);
   }
 
   async function handleSubmitEmployee(e: React.FormEvent) {
@@ -337,6 +533,14 @@ export default function Employees() {
       .filter(emp => emp.active)
       .reduce((sum, emp) => sum + calculateMonthlyTotalCost(emp), 0);
   }
+
+  const pendingCount = salaryEntries.filter(e => e.status === 'pending').length;
+  const confirmedCount = salaryEntries.filter(e => e.status === 'confirmed').length;
+  const confirmedTotal = salaryEntries
+    .filter(e => e.status === 'confirmed')
+    .reduce((s, e) => s + e.adjusted_amount, 0);
+
+  const monthDisplayLabel = new Date(`${selectedMonth}-01`).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
 
   return (
     <div className="space-y-6">
@@ -593,6 +797,277 @@ export default function Employees() {
           </table>
         </div>
       </div>
+
+      {/* Folha Salarial do Mês */}
+      <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-emerald-50 to-teal-50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-100 rounded-lg">
+                <DollarSign className="w-5 h-5 text-emerald-700" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Folha Salarial — {monthDisplayLabel}
+                </h3>
+                <p className="text-sm text-gray-500">
+                  Vencimento: dia 05 • Despesa lançada automaticamente no Financeiro ao confirmar
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-sm">
+              {pendingCount > 0 && (
+                <span className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 text-amber-800 rounded-full font-medium">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  {pendingCount} pendente{pendingCount > 1 ? 's' : ''}
+                </span>
+              )}
+              {confirmedCount > 0 && (
+                <span className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-100 text-emerald-800 rounded-full font-medium">
+                  <Check className="w-3.5 h-3.5" />
+                  {confirmedCount} confirmado{confirmedCount > 1 ? 's' : ''} — R$ {confirmedTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {loadingSalary ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600"></div>
+            <span className="ml-3 text-gray-500">Carregando folha...</span>
+          </div>
+        ) : salaryEntries.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+            <DollarSign className="w-10 h-10 mb-3 opacity-30" />
+            <p>Nenhum colaborador ativo encontrado.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                    Colaborador
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Salário Base
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                    Valor Lançado
+                  </th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                    Vencimento
+                  </th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                    Status
+                  </th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">
+                    Ações
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {salaryEntries.map((entry) => (
+                  <tr
+                    key={entry.employee_id}
+                    className={`hover:bg-gray-50 transition-colors ${
+                      entry.status === 'skipped' ? 'opacity-50' : ''
+                    }`}
+                  >
+                    <td className="px-6 py-4">
+                      <div className="text-sm font-medium text-gray-900">{entry.employee_name}</div>
+                      {entry.notes && (
+                        <div className="text-xs text-gray-400 mt-0.5">{entry.notes}</div>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-right text-gray-500">
+                      R$ {entry.base_salary.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-right font-semibold">
+                      {entry.status === 'pending' ? (
+                        <span className="text-gray-400 italic">—</span>
+                      ) : entry.status === 'skipped' ? (
+                        <span className="text-gray-400 italic">Pulado</span>
+                      ) : (
+                        <span className="text-emerald-700">
+                          R$ {entry.adjusted_amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-center text-gray-700">
+                      {new Date(`${entry.due_date}T12:00:00`).toLocaleDateString('pt-BR')}
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      {entry.status === 'pending' && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                          <AlertCircle className="w-3 h-3" />
+                          Pendente
+                        </span>
+                      )}
+                      {entry.status === 'confirmed' && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+                          <Check className="w-3 h-3" />
+                          Lançado
+                        </span>
+                      )}
+                      {entry.status === 'skipped' && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                          <SkipForward className="w-3 h-3" />
+                          Pulado
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        {savingEntry === entry.employee_id ? (
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-emerald-600"></div>
+                        ) : (
+                          <>
+                            {entry.status !== 'skipped' && (
+                              <button
+                                onClick={() => {
+                                  setEditingEntry(entry);
+                                  setEditAmount(entry.adjusted_amount.toFixed(2));
+                                  setEditNotes(entry.notes || '');
+                                }}
+                                className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                                  entry.status === 'confirmed'
+                                    ? 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                                    : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                }`}
+                              >
+                                {entry.status === 'confirmed' ? (
+                                  <><Edit2 className="w-3 h-3" /> Editar</>
+                                ) : (
+                                  <><Check className="w-3 h-3" /> Lançar</>
+                                )}
+                              </button>
+                            )}
+                            {entry.status === 'pending' && (
+                              <button
+                                onClick={() => handleSkipSalary(entry)}
+                                className="flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+                                title="Pular este mês"
+                              >
+                                <SkipForward className="w-3 h-3" />
+                              </button>
+                            )}
+                            {(entry.status === 'confirmed' || entry.status === 'skipped') && entry.cash_flow_id && (
+                              <button
+                                onClick={() => handleDeleteSalaryEntry(entry)}
+                                className="flex items-center gap-1 px-2 py-1.5 rounded text-xs font-medium bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+                                title="Remover lançamento"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Modal de Lançamento/Edição de Salário */}
+      {editingEntry && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">
+                  {editingEntry.status === 'confirmed' ? 'Editar Salário' : 'Lançar Salário'}
+                </h3>
+                <p className="text-sm text-gray-500 mt-0.5">{editingEntry.employee_name}</p>
+              </div>
+              <button
+                onClick={() => setEditingEntry(null)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-gray-50 rounded-lg p-3 text-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Salário Base:</span>
+                  <span className="font-semibold text-gray-900">
+                    R$ {editingEntry.base_salary.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center mt-1">
+                  <span className="text-gray-600">Vencimento:</span>
+                  <span className="font-semibold text-gray-900">
+                    {new Date(`${editingEntry.due_date}T12:00:00`).toLocaleDateString('pt-BR')}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center mt-1">
+                  <span className="text-gray-600">Descrição:</span>
+                  <span className="text-gray-700 text-xs text-right max-w-[55%]">{editingEntry.description}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Valor a Lançar (R$)
+                  {parseFloat(editAmount) !== editingEntry.base_salary && parseFloat(editAmount) > 0 && (
+                    <span className="ml-2 text-xs text-amber-600 font-normal">
+                      (ajustado — base: R$ {editingEntry.base_salary.toLocaleString('pt-BR', { minimumFractionDigits: 2 })})
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  autoFocus
+                  value={editAmount}
+                  onChange={(e) => setEditAmount(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-lg font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Observações (opcional)
+                </label>
+                <textarea
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Ex: Acréscimo por hora extra, desconto de falta..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg resize-none text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => handleConfirmSalary(editingEntry, parseFloat(editAmount), editNotes)}
+                  disabled={!editAmount || parseFloat(editAmount) <= 0}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                >
+                  <Check className="w-4 h-4" />
+                  {editingEntry.status === 'confirmed' ? 'Salvar Alteração' : 'Confirmar Lançamento'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingEntry(null)}
+                  className="px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg shadow-sm p-6">
         <div className="flex justify-between items-center mb-4">
