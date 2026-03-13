@@ -96,10 +96,10 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
   const [activeTab, setActiveTab] = useState<ActiveTab>('lancamentos');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStartDate, setFilterStartDate] = useState(
-    new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
+    new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0]
   );
   const [filterEndDate, setFilterEndDate] = useState(
-    new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().split('T')[0]
+    new Date(new Date().getFullYear(), 11, 31).toISOString().split('T')[0]
   );
   const [totalExpenses, setTotalExpenses] = useState(0);
 
@@ -502,11 +502,18 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
 
     try {
       if (editingRevenue) {
+        const oldPaymentAmount = Number(editingRevenue.payment_amount);
+        const diff = paymentAmount - oldPaymentAmount;
+        const newPaidAmount = Number(editingRevenue.paid_amount) + diff;
+        const newBalance = Math.max(Number(editingRevenue.total_amount) - newPaidAmount, 0);
+
         const { error } = await supabase
           .from('customer_revenue')
           .update({
             payment_date: paymentForm.payment_date,
             payment_amount: paymentAmount,
+            paid_amount: newPaidAmount,
+            balance: newBalance,
             payment_method: paymentForm.payment_method,
             notes: paymentForm.notes
           })
@@ -527,62 +534,27 @@ export default function CustomerRevenue({ onBack }: CustomerRevenueProps = {}) {
       } else {
         const receiptNumber = `REC-${Date.now()}`;
 
-        const { data: existingRevenue } = await supabase
+        const newPaidAmount = selectedDebt.paid_amount + paymentAmount;
+        const newBalance = Math.max(Number(selectedDebt.total_amount) - newPaidAmount, 0);
+
+        const { data: insertedRevenue, error } = await supabase
           .from('customer_revenue')
-          .select('id, paid_amount, payment_amount')
-          .eq('customer_id', selectedCustomer.id)
-          .eq('origin_type', selectedDebt.type)
-          .eq('origin_id', selectedDebt.id)
-          .maybeSingle();
-
-        let insertedRevenue: any = null;
-        let error: any = null;
-
-        if (existingRevenue) {
-          const newPaidAmount = Number(existingRevenue.paid_amount) + paymentAmount;
-          const newBalance = Number(selectedDebt.total_amount) - newPaidAmount;
-          const newPaymentAmount = Number(existingRevenue.payment_amount) + paymentAmount;
-
-          const { data, error: updateError } = await supabase
-            .from('customer_revenue')
-            .update({
-              paid_amount: newPaidAmount,
-              balance: newBalance,
-              payment_amount: newPaymentAmount,
-              payment_date: paymentForm.payment_date,
-              payment_method: paymentForm.payment_method,
-              notes: paymentForm.notes,
-              receipt_number: receiptNumber
-            })
-            .eq('id', existingRevenue.id)
-            .select()
-            .single();
-
-          insertedRevenue = data;
-          error = updateError;
-        } else {
-          const { data, error: insertError } = await supabase
-            .from('customer_revenue')
-            .insert({
-              customer_id: selectedCustomer.id,
-              origin_type: selectedDebt.type,
-              origin_id: selectedDebt.id,
-              origin_description: selectedDebt.description,
-              total_amount: selectedDebt.total_amount,
-              paid_amount: selectedDebt.paid_amount + paymentAmount,
-              balance: selectedDebt.balance - paymentAmount,
-              payment_date: paymentForm.payment_date,
-              payment_amount: paymentAmount,
-              payment_method: paymentForm.payment_method,
-              notes: paymentForm.notes,
-              receipt_number: receiptNumber
-            })
-            .select()
-            .single();
-
-          insertedRevenue = data;
-          error = insertError;
-        }
+          .insert({
+            customer_id: selectedCustomer.id,
+            origin_type: selectedDebt.type,
+            origin_id: selectedDebt.id,
+            origin_description: selectedDebt.description,
+            total_amount: selectedDebt.total_amount,
+            paid_amount: newPaidAmount,
+            balance: newBalance,
+            payment_date: paymentForm.payment_date,
+            payment_amount: paymentAmount,
+            payment_method: paymentForm.payment_method,
+            notes: paymentForm.notes,
+            receipt_number: receiptNumber
+          })
+          .select()
+          .single();
 
         if (error) throw error;
 
