@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
+import React, { useState, useMemo, useCallback, lazy, Suspense } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   DollarSign,
@@ -62,8 +62,8 @@ function formatCurrency(value: number): string {
 
 export default function FactoryFinance() {
   const [activeView, setActiveView] = useState<'manager' | 'charts' | 'reports' | 'customer-statement'>('manager');
-  const [loading, setLoading] = useState(true);
   const [rawEntries, setRawEntries] = useState<RawEntry[]>([]);
+  const [managerKey, setManagerKey] = useState(0);
 
   const currentDate = new Date();
   const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
@@ -72,48 +72,16 @@ export default function FactoryFinance() {
   const [startDate, setStartDate] = useState(format(firstDayOfMonth, 'yyyy-MM-dd'));
   const [endDate, setEndDate] = useState(format(lastDayOfMonth, 'yyyy-MM-dd'));
 
-  const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
-    loadData(abortRef.current.signal).catch(err => {
-      if (err?.name !== 'AbortError') console.error('Erro ao carregar dados:', err);
-    });
-    return () => { abortRef.current?.abort(); };
-  }, [startDate, endDate]);
-
-  async function loadData(signal?: AbortSignal) {
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('cash_flow')
-        .select('type, amount, date, cost_categories(name, type)')
-        .eq('business_unit', 'factory')
-        .gte('date', startDate)
-        .lte('date', endDate)
-        .abortSignal(signal as AbortSignal);
-
-      if (error) throw error;
-
-      const entries: RawEntry[] = (data || []).map((e: any) => ({
-        type: e.type,
-        amount: e.amount ?? 0,
-        date: e.date,
-        category_name: e.cost_categories?.name ?? null,
-        category_type: e.cost_categories?.type ?? null,
-      }));
-
-      setRawEntries(entries);
-    } catch (error: any) {
-      if (error?.name !== 'AbortError') {
-        console.error('Erro ao carregar dados:', error);
-        setRawEntries([]);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
+  const handleEntriesLoad = useCallback((entries: any[]) => {
+    const mapped: RawEntry[] = entries.map((e) => ({
+      type: e.type,
+      amount: e.amount ?? 0,
+      date: e.date,
+      category_name: e.cost_categories?.name ?? null,
+      category_type: e.cost_categories?.type ?? null,
+    }));
+    setRawEntries(mapped);
+  }, []);
 
   const balance = useMemo<FactoryBalance>(() => {
     const total_receitas = rawEntries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
@@ -273,17 +241,6 @@ export default function FactoryFinance() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto" />
-          <p className="mt-4 text-gray-600">Carregando...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -363,7 +320,7 @@ export default function FactoryFinance() {
               Mês Atual
             </button>
             <button
-              onClick={() => loadData()}
+              onClick={() => setManagerKey(k => k + 1)}
               className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm ml-auto"
             >
               <RefreshCw className="h-4 w-4" />
@@ -422,7 +379,12 @@ export default function FactoryFinance() {
       )}
 
       {activeView === 'manager' && (
-        <FactoryFinanceManager initialStartDate={startDate} initialEndDate={endDate} />
+        <FactoryFinanceManager
+          key={managerKey}
+          initialStartDate={startDate}
+          initialEndDate={endDate}
+          onEntriesLoad={handleEntriesLoad}
+        />
       )}
 
       {activeView === 'customer-statement' && (

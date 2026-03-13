@@ -84,6 +84,7 @@ interface PaymentMethod {
 interface FactoryFinanceManagerProps {
   initialStartDate?: string;
   initialEndDate?: string;
+  onEntriesLoad?: (entries: CashFlowEntry[]) => void;
 }
 
 const categoryOptionsIncome = [
@@ -266,6 +267,7 @@ const initialRefData: RefDataState = {
 export default function FactoryFinanceManager({
   initialStartDate = '',
   initialEndDate = '',
+  onEntriesLoad,
 }: FactoryFinanceManagerProps) {
   incrementRenderCount('FactoryFinanceManager');
 
@@ -320,6 +322,8 @@ export default function FactoryFinanceManager({
 
   const isLoadingDataRef = useRef(false);
   const refDataLoadedRef = useRef(false);
+  const onEntriesLoadRef = useRef(onEntriesLoad);
+  onEntriesLoadRef.current = onEntriesLoad;
 
   const pendingInsertCashFlowRef = useRef<Set<string>>(new Set());
   const insertCashFlowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -499,6 +503,7 @@ export default function FactoryFinanceManager({
         });
       } else {
         setEntries(enriched);
+        onEntriesLoadRef.current?.(enriched);
       }
 
       // [PAGINATION] Show "load more" only when a full page was returned
