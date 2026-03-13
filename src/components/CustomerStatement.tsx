@@ -206,7 +206,6 @@ const CustomerStatement: React.FC = () => {
         .from('construction_works')
         .select('id, work_name, contract_type, total_contract_value, start_date, created_at')
         .eq('customer_id', selectedCustomerId)
-        .eq('contract_type', 'pacote_fechado')
         .in('status', ['em_andamento', 'concluido', 'planejamento', 'cancelada'])
         .order('created_at', { ascending: true });
 
@@ -229,16 +228,33 @@ const CustomerStatement: React.FC = () => {
           paymentsByWork[payment.origin_id].push(payment);
         }
 
+        const { data: cashFlowWorkPayments } = await supabase
+          .from('cash_flow')
+          .select('id, date, amount, description, notes, construction_work_id, customer_revenue_id')
+          .eq('customer_id', selectedCustomerId)
+          .eq('type', 'income')
+          .in('construction_work_id', workIds)
+          .is('customer_revenue_id', null)
+          .order('date', { ascending: true });
+
+        const cashFlowByWork: Record<string, any[]> = {};
+        for (const entry of cashFlowWorkPayments || []) {
+          if (!entry.construction_work_id) continue;
+          if (!cashFlowByWork[entry.construction_work_id]) cashFlowByWork[entry.construction_work_id] = [];
+          cashFlowByWork[entry.construction_work_id].push(entry);
+        }
+
         for (const work of constructionWorks) {
           const workDate = work.start_date || work.created_at;
           const dateOnly = workDate.split('T')[0];
+          const contractLabel = work.contract_type === 'administracao' ? 'Administração' : 'Pacote Fechado';
 
           statementEntries.push({
             id: `work-${work.id}`,
             date: dateOnly,
             type: 'debit',
             origin: 'obra',
-            description: `Obra Pacote Fechado: ${work.work_name}`,
+            description: `Obra (${contractLabel}): ${work.work_name}`,
             reference: `Obra #${work.id.substring(0, 8)}`,
             debit_amount: Number(work.total_contract_value),
             credit_amount: 0,
@@ -262,7 +278,48 @@ const CustomerStatement: React.FC = () => {
               work_id: work.id,
             });
           }
+
+          const cfPayments = cashFlowByWork[work.id] || [];
+          for (const cfEntry of cfPayments) {
+            statementEntries.push({
+              id: `cf-income-${cfEntry.id}`,
+              date: cfEntry.date,
+              type: 'credit',
+              origin: 'recebimento_obra',
+              description: cfEntry.description || `Recebimento - ${work.work_name}`,
+              reference: `Obra #${work.id.substring(0, 8)}`,
+              debit_amount: 0,
+              credit_amount: Number(cfEntry.amount),
+              balance: 0,
+              work_id: work.id,
+            });
+          }
         }
+      }
+
+      const { data: cashFlowDirectIncomes } = await supabase
+        .from('cash_flow')
+        .select('id, date, amount, description, notes, construction_work_id, customer_revenue_id')
+        .eq('customer_id', selectedCustomerId)
+        .eq('type', 'income')
+        .is('construction_work_id', null)
+        .is('customer_revenue_id', null)
+        .gte('date', startDate)
+        .lte('date', endDate)
+        .order('date', { ascending: true });
+
+      for (const cfEntry of cashFlowDirectIncomes || []) {
+        statementEntries.push({
+          id: `cf-direct-${cfEntry.id}`,
+          date: cfEntry.date,
+          type: 'credit',
+          origin: 'recebimento_obra',
+          description: cfEntry.description || 'Recebimento',
+          reference: 'Fluxo de Caixa',
+          debit_amount: 0,
+          credit_amount: Number(cfEntry.amount),
+          balance: 0,
+        });
       }
 
       statementEntries.sort((a, b) => {
