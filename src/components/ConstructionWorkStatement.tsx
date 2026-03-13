@@ -72,19 +72,50 @@ export default function ConstructionWorkStatement({ work, onClose }: StatementPr
 
   async function loadPayments() {
     try {
-      const { data, error } = await supabase
-        .from('customer_revenue')
-        .select('*')
-        .eq('origin_type', 'construction_work')
-        .eq('origin_id', work.id)
-        .order('payment_date', { ascending: true });
+      const [revenueResult, cashFlowResult] = await Promise.all([
+        supabase
+          .from('customer_revenue')
+          .select('id, payment_date, payment_amount, payment_method, notes, origin_description, receipt_number')
+          .eq('origin_type', 'construction_work')
+          .eq('origin_id', work.id)
+          .order('payment_date', { ascending: true }),
+        supabase
+          .from('cash_flow')
+          .select('id, date, amount, description, notes, payment_method_id')
+          .eq('type', 'income')
+          .eq('construction_work_id', work.id)
+          .is('customer_revenue_id', null)
+          .order('date', { ascending: true }),
+      ]);
 
-      if (error) throw error;
+      if (revenueResult.error) throw revenueResult.error;
+      if (cashFlowResult.error) throw cashFlowResult.error;
 
-      const paymentsData = data || [];
-      setPayments(paymentsData);
+      const revenuePayments: Payment[] = (revenueResult.data || []).map((p) => ({
+        id: p.id,
+        payment_date: p.payment_date,
+        payment_amount: p.payment_amount,
+        payment_method: p.payment_method || '',
+        notes: p.notes || '',
+        origin_description: p.origin_description || '',
+      }));
 
-      const total = paymentsData.reduce((sum, p) => sum + (p.payment_amount || 0), 0);
+      const cashFlowPayments: Payment[] = (cashFlowResult.data || []).map((p) => ({
+        id: `cf-${p.id}`,
+        payment_date: p.date,
+        payment_amount: p.amount,
+        payment_method: p.payment_method_id || '',
+        notes: p.notes || p.description || '',
+        origin_description: p.description || 'Recebimento via Receitas/Despesas',
+      }));
+
+      const allPayments = [...revenuePayments, ...cashFlowPayments].sort(
+        (a, b) => new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime()
+      );
+
+      setPayments(allPayments);
+
+      const total = allPayments.reduce((sum, p) => sum + (p.payment_amount || 0), 0);
       setTotalPaid(total);
     } catch (error) {
       console.error('Erro ao carregar pagamentos:', error);
