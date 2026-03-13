@@ -240,14 +240,24 @@ export default function ConstructionProjects() {
     const work = works.find(w => w.id === workId);
     if (!work) return;
 
-    const { data: payments } = await supabase
-      .from('customer_revenue')
-      .select('payment_amount')
-      .eq('origin_type', 'construction_work')
-      .eq('origin_id', workId)
-      .eq('estornado', false);
+    const [{ data: revenues }, { data: cashFlowEntries }] = await Promise.all([
+      supabase
+        .from('customer_revenue')
+        .select('payment_amount')
+        .eq('origin_type', 'construction_work')
+        .eq('origin_id', workId)
+        .eq('estornado', false),
+      supabase
+        .from('cash_flow')
+        .select('amount, customer_revenue_id')
+        .eq('construction_work_id', workId)
+        .eq('type', 'income')
+        .is('customer_revenue_id', null),
+    ]);
 
-    const totalPaid = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
+    const fromRevenues = (revenues || []).reduce((sum, p) => sum + Number(p.payment_amount), 0);
+    const fromCashFlow = (cashFlowEntries || []).reduce((sum, e) => sum + Number(e.amount), 0);
+    const totalPaid = fromRevenues + fromCashFlow;
     const balance = Number(work.total_contract_value || 0) - totalPaid;
 
     setWorkPayments(prev => ({
