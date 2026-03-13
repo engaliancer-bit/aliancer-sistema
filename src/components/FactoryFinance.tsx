@@ -64,6 +64,8 @@ export default function FactoryFinance() {
   const [activeView, setActiveView] = useState<'manager' | 'charts' | 'reports' | 'customer-statement'>('manager');
   const [rawEntries, setRawEntries] = useState<RawEntry[]>([]);
   const [managerKey, setManagerKey] = useState(0);
+  const [totalReceitas, setTotalReceitas] = useState(0);
+  const [totalDespesas, setTotalDespesas] = useState(0);
 
   const currentDate = new Date();
   const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
@@ -83,10 +85,12 @@ export default function FactoryFinance() {
     setRawEntries(mapped);
   }, []);
 
-  const balance = useMemo<FactoryBalance>(() => {
-    const total_receitas = rawEntries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
-    const total_despesas = rawEntries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+  const handleBalanceLoad = useCallback((b: { total_receitas: number; total_despesas: number }) => {
+    setTotalReceitas(b.total_receitas);
+    setTotalDespesas(b.total_despesas);
+  }, []);
 
+  const balance = useMemo<FactoryBalance>(() => {
     const receitas_vendas = rawEntries
       .filter(e => e.type === 'income' && e.category_type === 'income_sales')
       .reduce((s, e) => s + e.amount, 0);
@@ -105,18 +109,18 @@ export default function FactoryFinance() {
       .reduce((s, e) => s + e.amount, 0);
 
     return {
-      total_receitas,
-      total_despesas,
-      saldo: total_receitas - total_despesas,
+      total_receitas: totalReceitas,
+      total_despesas: totalDespesas,
+      saldo: totalReceitas - totalDespesas,
       receitas_vendas,
       receitas_servicos,
-      receitas_outras: Math.max(0, total_receitas - receitas_vendas - receitas_servicos),
+      receitas_outras: Math.max(0, totalReceitas - receitas_vendas - receitas_servicos),
       despesas_insumos,
       despesas_pessoal,
       despesas_operacionais,
-      despesas_outras: Math.max(0, total_despesas - despesas_insumos - despesas_pessoal - despesas_operacionais),
+      despesas_outras: Math.max(0, totalDespesas - despesas_insumos - despesas_pessoal - despesas_operacionais),
     };
-  }, [rawEntries]);
+  }, [rawEntries, totalReceitas, totalDespesas]);
 
   const monthlyData = useMemo<MonthlyData[]>(() => {
     const map = new Map<string, { receitas: number; despesas: number }>();
@@ -384,6 +388,7 @@ export default function FactoryFinance() {
           initialStartDate={startDate}
           initialEndDate={endDate}
           onEntriesLoad={handleEntriesLoad}
+          onBalanceLoad={handleBalanceLoad}
         />
       )}
 

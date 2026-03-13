@@ -81,10 +81,16 @@ interface PaymentMethod {
   name: string;
 }
 
+interface FactoryBalance {
+  total_receitas: number;
+  total_despesas: number;
+}
+
 interface FactoryFinanceManagerProps {
   initialStartDate?: string;
   initialEndDate?: string;
   onEntriesLoad?: (entries: CashFlowEntry[]) => void;
+  onBalanceLoad?: (balance: FactoryBalance) => void;
 }
 
 const categoryOptionsIncome = [
@@ -268,6 +274,7 @@ export default function FactoryFinanceManager({
   initialStartDate = '',
   initialEndDate = '',
   onEntriesLoad,
+  onBalanceLoad,
 }: FactoryFinanceManagerProps) {
   incrementRenderCount('FactoryFinanceManager');
 
@@ -324,6 +331,8 @@ export default function FactoryFinanceManager({
   const refDataLoadedRef = useRef(false);
   const onEntriesLoadRef = useRef(onEntriesLoad);
   onEntriesLoadRef.current = onEntriesLoad;
+  const onBalanceLoadRef = useRef(onBalanceLoad);
+  onBalanceLoadRef.current = onBalanceLoad;
 
   const pendingInsertCashFlowRef = useRef<Set<string>>(new Set());
   const insertCashFlowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -449,6 +458,29 @@ export default function FactoryFinanceManager({
     };
   }
 
+  async function loadBalance() {
+    if (!onBalanceLoadRef.current) return;
+    try {
+      const { data, error } = await supabase
+        .from('cash_flow')
+        .select('type, amount')
+        .eq('business_unit', 'factory')
+        .gte('date', debouncedStartDate || '1900-01-01')
+        .lte('date', debouncedEndDate || '2999-12-31');
+
+      if (error || !data) return;
+
+      let total_receitas = 0;
+      let total_despesas = 0;
+      for (const row of data) {
+        if (row.type === 'income') total_receitas += Number(row.amount ?? 0);
+        else total_despesas += Number(row.amount ?? 0);
+      }
+      onBalanceLoadRef.current({ total_receitas, total_despesas });
+    } catch {
+    }
+  }
+
   // [PERF] Lean SELECT — no JOINs. Enrichment happens locally via Maps.
   async function loadEntries(page = 0, append = false) {
     const reqKey = createRequestKey('receitas-despesas', 'load_entries');
@@ -528,7 +560,7 @@ export default function FactoryFinanceManager({
     setLoading(true);
     const t0 = performance.now();
     try {
-      await loadEntries(0, false);
+      await Promise.all([loadEntries(0, false), loadBalance()]);
       recordMetric(METRIC.FACTORY_FINANCE_LOAD, performance.now() - t0);
     } finally {
       isLoadingDataRef.current = false;
