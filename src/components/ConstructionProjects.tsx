@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, Package, AlertCircle, FileText } from 'lucide-react';
+import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, Package, AlertCircle, FileText, RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useHorizontalKeyboardScroll } from '../hooks/useHorizontalKeyboardScroll';
 import ConstructionWorkStatement from './ConstructionWorkStatement';
@@ -94,6 +94,7 @@ export default function ConstructionProjects() {
   const [selectedWorkId, setSelectedWorkId] = useState<string>('');
   const [showStatementModal, setShowStatementModal] = useState(false);
   const [selectedWorkForStatement, setSelectedWorkForStatement] = useState<Work | null>(null);
+  const [refreshingPayments, setRefreshingPayments] = useState<{ [key: string]: boolean }>({});
   const tableRef = useRef<HTMLDivElement>(null);
 
   useHorizontalKeyboardScroll(tableRef);
@@ -230,8 +231,7 @@ export default function ConstructionProjects() {
       newExpanded.delete(workId);
     } else {
       newExpanded.add(workId);
-      await loadWorkItems(workId);
-      await loadWorkPayments(workId);
+      await Promise.all([loadWorkItems(workId), loadWorkPayments(workId)]);
     }
     setExpandedWorks(newExpanded);
   };
@@ -244,7 +244,8 @@ export default function ConstructionProjects() {
       .from('customer_revenue')
       .select('payment_amount')
       .eq('origin_type', 'construction_work')
-      .eq('origin_id', workId);
+      .eq('origin_id', workId)
+      .eq('estornado', false);
 
     const totalPaid = payments?.reduce((sum, p) => sum + Number(p.payment_amount), 0) || 0;
     const balance = Number(work.total_contract_value || 0) - totalPaid;
@@ -253,6 +254,12 @@ export default function ConstructionProjects() {
       ...prev,
       [workId]: { total_paid: totalPaid, balance }
     }));
+  };
+
+  const handleRefreshPayments = async (workId: string) => {
+    setRefreshingPayments(prev => ({ ...prev, [workId]: true }));
+    await loadWorkPayments(workId);
+    setRefreshingPayments(prev => ({ ...prev, [workId]: false }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -710,9 +717,20 @@ export default function ConstructionProjects() {
 
                           {work.contract_type === 'pacote_fechado' && workPayments[work.id] && (
                             <div className="bg-gradient-to-r from-green-50 to-blue-50 p-4 rounded-lg border-2 border-green-200">
-                              <div className="flex items-center gap-2 mb-3">
-                                <DollarSign className="h-6 w-6 text-green-600" />
-                                <h4 className="font-bold text-gray-800 text-lg">Situação Financeira do Cliente</h4>
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center gap-2">
+                                  <DollarSign className="h-6 w-6 text-green-600" />
+                                  <h4 className="font-bold text-gray-800 text-lg">Situação Financeira do Cliente</h4>
+                                </div>
+                                <button
+                                  onClick={() => handleRefreshPayments(work.id)}
+                                  disabled={refreshingPayments[work.id]}
+                                  className="flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-white rounded transition-colors"
+                                  title="Atualizar pagamentos"
+                                >
+                                  <RefreshCw className={`h-3.5 w-3.5 ${refreshingPayments[work.id] ? 'animate-spin' : ''}`} />
+                                  Atualizar
+                                </button>
                               </div>
                               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <div className="bg-white p-3 rounded-lg border border-blue-200">
