@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from 'react';
-import { Package, ClipboardList, Package2, Droplet, BookOpen, Building2, Users, DollarSign, BarChart3, Target, Tag, Home, UserPlus, FileText, Clipboard, AlertTriangle, Layers, Activity, Briefcase, HardHat, MapPin, Settings, Share2, Box, Calculator, Truck, Calendar, FileSpreadsheet, MessageSquare } from 'lucide-react';
+import { Package, ClipboardList, Package2, Droplet, BookOpen, Building2, Users, DollarSign, BarChart3, Target, Tag, Home, UserPlus, FileText, Clipboard, AlertTriangle, Layers, Activity, Briefcase, HardHat, MapPin, Settings, Share2, Box, Calculator, Truck, Calendar, FileSpreadsheet, MessageSquare, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import LoadingFallback from './components/LoadingFallback';
 import PWAInstallPrompt from './components/PWAInstallPrompt';
@@ -45,6 +45,7 @@ const EngineeringFinance = lazy(() => import('./components/EngineeringFinance'))
 const ConstructionProjects = lazy(() => import('./components/ConstructionProjects'));
 const ConstructionFinance = lazy(() => import('./components/ConstructionFinance'));
 const ConstructionBudgets = lazy(() => import('./components/construction/ConstructionBudgets'));
+const PaymentAudit = lazy(() => import('./components/PaymentAudit'));
 const Properties = lazy(() => import('./components/Properties'));
 const CompanySettings = lazy(() => import('./components/CompanySettings'));
 const ModuleSharing = lazy(() => import('./components/ModuleSharing'));
@@ -55,7 +56,7 @@ const EngineeringMeetings = lazy(() => import('./components/EngineeringMeetings'
 type MainTab = 'factory' | 'engineering' | 'construction' | 'sales' | 'settings' | 'sharing';
 type FactoryTab = 'products' | 'molds' | 'production' | 'inventory' | 'materials' | 'material-inventory' | 'recipes' | 'suppliers' | 'employees' | 'indirect-costs' | 'sales-report' | 'dashboard' | 'sales-prices' | 'customers' | 'quotes' | 'production-orders' | 'production-pending' | 'compositions' | 'ribbed-slab-quote' | 'stage-tracker' | 'cashflow' | 'deliveries';
 type EngineeringTab = 'eng-customers' | 'eng-properties' | 'eng-projects' | 'eng-services' | 'eng-employees' | 'eng-ai-docs' | 'eng-finance' | 'eng-meetings';
-type ConstructionTab = 'const-customers' | 'const-projects' | 'const-finance' | 'const-budgets';
+type ConstructionTab = 'const-customers' | 'const-projects' | 'const-finance' | 'const-budgets' | 'const-audit';
 
 const mainTabs = [
   { id: 'factory' as MainTab, label: 'Indústria de Artefatos e Pré-Moldados', icon: Package, color: 'from-blue-500 to-blue-600' },
@@ -107,6 +108,7 @@ const constructionTabs = [
   { id: 'const-budgets' as ConstructionTab, label: 'Orcamentos', icon: FileSpreadsheet },
   { id: 'const-projects' as ConstructionTab, label: 'Obras', icon: HardHat },
   { id: 'const-finance' as ConstructionTab, label: 'Financeiro', icon: DollarSign },
+  { id: 'const-audit' as ConstructionTab, label: 'Auditoria de Pagamentos', icon: ShieldCheck },
 ];
 
 const MEMORY_CLEANUP_INTERVAL = 5 * 60 * 1000;
@@ -773,6 +775,7 @@ function App() {
                 {constructionTab === 'const-budgets' && <ConstructionBudgets />}
                 {constructionTab === 'const-projects' && <ConstructionProjects />}
                 {constructionTab === 'const-finance' && <ConstructionFinance />}
+                {constructionTab === 'const-audit' && <PaymentAudit />}
               </Suspense>
             </div>
           )}
