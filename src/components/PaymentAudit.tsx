@@ -2,7 +2,8 @@ import { useState, useCallback } from 'react';
 import {
   ShieldCheck, AlertTriangle, XCircle, CheckCircle2, RefreshCw,
   Wrench, Download, ChevronDown, ChevronRight, Info, Trash2,
-  FileCode2, Database, TrendingUp, Users,
+  FileCode2, Database, TrendingUp, Users, Calendar, Filter,
+  Tag, CreditCard, Copy,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -14,7 +15,8 @@ type IssueCategory =
   | 'inconsistency'
   | 'duplicate'
   | 'missing_cashflow'
-  | 'installment_mismatch';
+  | 'installment_mismatch'
+  | 'bad_category';
 
 interface AuditIssue {
   id: string;
@@ -24,6 +26,7 @@ interface AuditIssue {
   detail: string;
   revenue_id?: string;
   cashflow_id?: string;
+  work_item_id?: string;
   amount: number;
   customer_name?: string;
   work_name?: string;
@@ -41,26 +44,35 @@ interface AuditSummary {
   total_customers: number;
   total_issues: number;
   total_at_risk: number;
-  fixed_count: number;
   issues_by_category: Record<string, number>;
   issues_by_severity: Record<string, number>;
   ran_at: string;
+  period_label: string;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+interface DateRange {
+  from: string;
+  to: string;
+}
 
-const fmt = (n: number) =>
-  n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-
-const fmtDate = (d?: string | null) =>
-  d ? new Date(d + 'T12:00:00').toLocaleDateString('pt-BR') : '—';
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const CATEGORY_LABELS: Record<IssueCategory, string> = {
   orphan: 'Pagamento Orfao',
   inconsistency: 'Inconsistencia',
   duplicate: 'Duplicacao',
-  missing_cashflow: 'Fluxo de Caixa Ausente',
+  missing_cashflow: 'FC Ausente',
   installment_mismatch: 'Parcela Divergente',
+  bad_category: 'Categorizacao Errada',
+};
+
+const CATEGORY_DESCRIPTIONS: Record<IssueCategory, string> = {
+  orphan: 'Pagamentos sem cliente ou obra valida',
+  inconsistency: 'Cliente, valor ou obra inconsistentes entre tabelas',
+  duplicate: 'Mesma receita registrada mais de uma vez',
+  missing_cashflow: 'Receitas sem entrada correspondente no fluxo de caixa',
+  installment_mismatch: 'Parcelas pagas sem receita ou com valores divergentes',
+  bad_category: 'Itens de obra aparecendo como pagamento ou vice-versa',
 };
 
 const ORIGIN_LABELS: Record<string, string> = {
@@ -72,7 +84,7 @@ const ORIGIN_LABELS: Record<string, string> = {
 const SEVERITY_BORDER: Record<IssueSeverity, string> = {
   critical: 'border-red-300 bg-red-50',
   warning: 'border-yellow-300 bg-yellow-50',
-  info: 'border-blue-300 bg-blue-50',
+  info: 'border-blue-200 bg-blue-50',
 };
 
 const SEVERITY_BADGE: Record<IssueSeverity, string> = {
@@ -93,67 +105,78 @@ const SEVERITY_ICON_CLS: Record<IssueSeverity, string> = {
   info: 'text-blue-600',
 };
 
-// SQL audit queries for export
+// Known income categories for cash_flow — entries NOT in this set are suspicious
+const KNOWN_INCOME_CATEGORIES = new Set([
+  'receita_cliente',
+  'Serviços de Engenharia',
+  'Servicos de Engenharia',
+  'Venda de Produtos',
+  'Venda Construtora',
+  'Servicos de Muck',
+  'Outras Receitas',
+  'income',
+  'receita',
+  'pagamento',
+  'Pagamento',
+]);
+
+// Categories that indicate an item was wrongly booked as income
+const COST_LIKE_INCOME_CATEGORIES = [
+  'Item da Obra',
+  'item_obra',
+  'custo',
+  'cost',
+  'despesa',
+  'expense',
+  'material',
+  'produto',
+  'service',
+  'servico',
+];
+
+// SQL queries for export
 const SQL_AUDIT_QUERIES = `-- ================================================================
---  AUDITORIA DE INTEGRIDADE DE PAGAMENTOS - ALIANCER
+--  AUDITORIA COMPLETA DE INTEGRIDADE DE PAGAMENTOS - ALIANCER
 --  Todas as queries sao SOMENTE LEITURA (SELECT)
+--  Aplique filtro de periodo substituindo as datas conforme necessario
 -- ================================================================
 
--- [A] Receitas sem entrada correspondente no fluxo de caixa
--- (exclui registros estornados, pois estes nao devem ter CF)
+-- ==============================================================
+-- DIMENSAO 1: PAGAMENTOS ORFAOS
+-- ==============================================================
+
+-- [1A] Receitas em customer_revenue sem customer_id valido
 SELECT
   cr.id            AS revenue_id,
   cr.customer_id,
-  c.name           AS customer_name,
   cr.origin_type,
-  cr.origin_id,
   cr.origin_description,
   cr.payment_date,
   cr.payment_amount,
-  cr.payment_method,
   cr.estornado
 FROM customer_revenue cr
 LEFT JOIN customers c ON c.id = cr.customer_id
-LEFT JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-WHERE cf.id IS NULL
-  AND COALESCE(cr.estornado, false) = false
-  AND cr.payment_amount > 0
+WHERE c.id IS NULL
 ORDER BY cr.payment_date DESC;
 
--- [B] Divergencia de cliente entre customer_revenue e cash_flow
+-- [1B] Entradas de caixa (income) sem customer_id E sem customer_revenue_id
+--     (entradas manuais possivelmente orfas)
 SELECT
-  cr.id            AS revenue_id,
-  cf.id            AS cashflow_id,
-  cr.customer_id   AS revenue_customer_id,
-  cr.payment_date,
-  cr.payment_amount,
-  cf.customer_id   AS cashflow_customer_id,
-  c1.name          AS revenue_customer,
-  c2.name          AS cashflow_customer
-FROM customer_revenue cr
-JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-LEFT JOIN customers c1 ON c1.id = cr.customer_id
-LEFT JOIN customers c2 ON c2.id = cf.customer_id
-WHERE cf.customer_id IS NOT NULL
-  AND cf.customer_id <> cr.customer_id
-ORDER BY cr.payment_date DESC;
+  cf.id,
+  cf.date,
+  cf.category,
+  cf.description,
+  cf.amount,
+  cf.construction_work_id,
+  cf.business_unit
+FROM cash_flow cf
+WHERE cf.type = 'income'
+  AND cf.customer_id IS NULL
+  AND cf.customer_revenue_id IS NULL
+  AND cf.sale_id IS NULL
+ORDER BY cf.date DESC;
 
--- [C] Divergencia de valor entre customer_revenue e cash_flow
-SELECT
-  cr.id            AS revenue_id,
-  cf.id            AS cashflow_id,
-  cr.payment_date,
-  cr.payment_amount AS revenue_amount,
-  cf.amount        AS cashflow_amount,
-  ABS(cr.payment_amount - cf.amount) AS diferenca,
-  c.name           AS customer_name
-FROM customer_revenue cr
-JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-LEFT JOIN customers c ON c.id = cr.customer_id
-WHERE ABS(cr.payment_amount - cf.amount) > 0.01
-ORDER BY ABS(cr.payment_amount - cf.amount) DESC;
-
--- [D] Pagamentos de obra vinculados a obra inexistente
+-- [1C] Receitas de obra vinculadas a obra inexistente
 SELECT
   cr.id            AS revenue_id,
   cr.customer_id,
@@ -168,7 +191,11 @@ WHERE cr.origin_type = 'construction_work'
   AND cw.id IS NULL
 ORDER BY cr.payment_date DESC;
 
--- [D2] Pagamentos de obra onde o cliente nao bate com a obra
+-- ==============================================================
+-- DIMENSAO 2: INCONSISTENCIAS DE VINCULO
+-- ==============================================================
+
+-- [2A] customer_revenue.customer_id != construction_works.customer_id
 SELECT
   cr.id            AS revenue_id,
   cr.customer_id   AS payment_customer_id,
@@ -186,9 +213,47 @@ WHERE cr.origin_type = 'construction_work'
   AND cw.customer_id <> cr.customer_id
 ORDER BY cr.payment_date DESC;
 
--- [E] Entradas de caixa legadas/duplicadas para obras
---     (cash_flow.construction_work_id SET, mas sem customer_revenue_id)
---     que coexistem com registros em customer_revenue para a mesma obra
+-- [2B] customer_id divergente entre customer_revenue e cash_flow vinculado
+SELECT
+  cr.id            AS revenue_id,
+  cf.id            AS cashflow_id,
+  cr.customer_id   AS revenue_customer_id,
+  cr.payment_date,
+  cr.payment_amount,
+  cf.customer_id   AS cashflow_customer_id,
+  c1.name          AS revenue_customer,
+  c2.name          AS cashflow_customer
+FROM customer_revenue cr
+JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+LEFT JOIN customers c1 ON c1.id = cr.customer_id
+LEFT JOIN customers c2 ON c2.id = cf.customer_id
+WHERE cf.customer_id IS NOT NULL
+  AND cf.customer_id <> cr.customer_id
+ORDER BY cr.payment_date DESC;
+
+-- ==============================================================
+-- DIMENSAO 3: DUPLICACOES
+-- ==============================================================
+
+-- [3A] Receitas duplicadas: mesmo (customer_id, origin_type, origin_id)
+--     Nota: existe unique constraint, mas pode haver violacoes antigas
+SELECT
+  customer_id,
+  origin_type,
+  origin_id,
+  COUNT(*)         AS num_registros,
+  SUM(payment_amount) AS total_valor,
+  MIN(payment_date) AS primeira_data,
+  MAX(payment_date) AS ultima_data
+FROM customer_revenue
+WHERE COALESCE(estornado, false) = false
+GROUP BY customer_id, origin_type, origin_id
+HAVING COUNT(*) > 1
+ORDER BY num_registros DESC;
+
+-- [3B] Mesma receita em customer_revenue E em cash_flow legado
+--     (cash_flow com construction_work_id e sem customer_revenue_id,
+--      mas ja existe customer_revenue para a mesma obra)
 WITH revenue_work_ids AS (
   SELECT DISTINCT origin_id
   FROM customer_revenue
@@ -210,20 +275,115 @@ WHERE cf.type = 'income'
   AND cf.construction_work_id IN (SELECT origin_id FROM revenue_work_ids)
 ORDER BY cf.date DESC;
 
--- [F] Receitas com customer_id inexistente na tabela customers
+-- [3C] Mesmo valor + data + cliente no cash_flow (duplicatas exatas)
+SELECT
+  customer_id,
+  date,
+  amount,
+  category,
+  COUNT(*) AS num_duplicatas,
+  array_agg(id) AS ids
+FROM cash_flow
+WHERE type = 'income'
+GROUP BY customer_id, date, amount, category
+HAVING COUNT(*) > 1
+ORDER BY num_duplicatas DESC, amount DESC;
+
+-- ==============================================================
+-- DIMENSAO 4: CATEGORIZACOES INCORRETAS
+-- ==============================================================
+
+-- [4A] Itens de obra (construction_work_items) com item_type errado
+--      ou preco zerado sendo contabilizados como pagamento
+SELECT
+  cwi.id,
+  cwi.work_id,
+  cw.work_name,
+  cwi.item_type,
+  cwi.item_name,
+  cwi.quantity,
+  cwi.unit_price,
+  cwi.total_price
+FROM construction_work_items cwi
+JOIN construction_works cw ON cw.id = cwi.work_id
+WHERE cwi.total_price = 0
+   OR cwi.unit_price < 0
+ORDER BY cwi.total_price ASC;
+
+-- [4B] Entradas de caixa do tipo 'income' com categoria estranha
+--      (categorias que soam como despesa/custo sendo registradas como receita)
+SELECT
+  id,
+  date,
+  category,
+  description,
+  amount,
+  customer_id,
+  construction_work_id,
+  customer_revenue_id,
+  business_unit
+FROM cash_flow
+WHERE type = 'income'
+  AND lower(category) IN (
+    'item da obra', 'item_obra', 'custo', 'cost',
+    'despesa', 'expense', 'material', 'produto'
+  )
+ORDER BY date DESC;
+
+-- [4C] Entradas de caixa de 'income' sem categoria conhecida
+SELECT
+  id,
+  date,
+  category,
+  description,
+  amount,
+  business_unit
+FROM cash_flow
+WHERE type = 'income'
+  AND category NOT IN (
+    'receita_cliente', 'Serviços de Engenharia',
+    'Venda de Produtos', 'Venda Construtora',
+    'Servicos de Muck', 'Outras Receitas',
+    'income', 'receita', 'pagamento', 'Pagamento'
+  )
+ORDER BY date DESC;
+
+-- ==============================================================
+-- DIMENSAO 5: VALORES INCONSISTENTES
+-- ==============================================================
+
+-- [5A] Divergencia de valor entre customer_revenue e cash_flow
 SELECT
   cr.id            AS revenue_id,
-  cr.customer_id,
-  cr.origin_type,
-  cr.origin_description,
+  cf.id            AS cashflow_id,
   cr.payment_date,
-  cr.payment_amount
+  cr.payment_amount AS revenue_amount,
+  cf.amount        AS cashflow_amount,
+  ABS(cr.payment_amount - cf.amount) AS diferenca,
+  c.name           AS customer_name
 FROM customer_revenue cr
+JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
 LEFT JOIN customers c ON c.id = cr.customer_id
-WHERE c.id IS NULL
-ORDER BY cr.payment_date DESC;
+WHERE ABS(cr.payment_amount - cf.amount) > 0.01
+ORDER BY ABS(cr.payment_amount - cf.amount) DESC;
 
--- [G] Parcelas (quote_installments) com valores divergentes do quote
+-- [5B] Total de parcelas != valor total do orcamento
+SELECT
+  q.id             AS quote_id,
+  c.name           AS customer_name,
+  q.total_value    AS valor_orcamento,
+  COUNT(qi.id)     AS num_parcelas,
+  SUM(qi.installment_amount) AS soma_parcelas,
+  ABS(q.total_value - SUM(qi.installment_amount)) AS diferenca
+FROM quotes q
+JOIN customers c ON c.id = q.customer_id
+JOIN quote_installments qi ON qi.quote_id = q.id
+WHERE q.has_installment_schedule = true
+GROUP BY q.id, c.name, q.total_value
+HAVING ABS(q.total_value - SUM(qi.installment_amount)) > 0.01
+ORDER BY ABS(q.total_value - SUM(qi.installment_amount)) DESC;
+
+-- [5C] Parcelas pagas sem receita correspondente em customer_revenue
 SELECT
   qi.id            AS installment_id,
   qi.quote_id,
@@ -232,8 +392,6 @@ SELECT
   qi.paid_amount,
   qi.payment_status,
   q.total_value    AS quote_total,
-  q.payment_status AS quote_payment_status,
-  q.paid_amount    AS quote_paid_amount,
   c.name           AS customer_name
 FROM quote_installments qi
 JOIN quotes q ON q.id = qi.quote_id
@@ -244,51 +402,99 @@ WHERE qi.payment_status = 'paid'
     WHERE cr.origin_type = 'quote'
       AND cr.origin_id = qi.quote_id
   )
-ORDER BY qi.updated_at DESC;
+ORDER BY qi.due_date DESC;
 
--- [H] Resumo executivo por severidade e categoria
-WITH issues AS (
-  -- A: missing CF
-  SELECT 'A_missing_cashflow' AS check_id,
-         'missing_cashflow'   AS category,
-         'warning'            AS severity,
-         COUNT(*)             AS count,
-         SUM(cr.payment_amount) AS valor_total
-  FROM customer_revenue cr
-  LEFT JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-  WHERE cf.id IS NULL
-    AND COALESCE(cr.estornado, false) = false
-    AND cr.payment_amount > 0
+-- [5D] customer_revenue.paid_amount != soma dos pagamentos registrados
+SELECT
+  cr.id,
+  c.name           AS customer_name,
+  cr.origin_type,
+  cr.origin_description,
+  cr.total_amount,
+  cr.paid_amount   AS registrado,
+  cr.payment_amount AS ultimo_pagamento,
+  cr.balance,
+  (cr.total_amount - cr.paid_amount) AS calculado_balance
+FROM customer_revenue cr
+LEFT JOIN customers c ON c.id = cr.customer_id
+WHERE ABS(cr.balance - (cr.total_amount - cr.paid_amount)) > 0.01
+ORDER BY cr.payment_date DESC;
+
+-- ==============================================================
+-- DIMENSAO 6: RECEITAS SEM FC
+-- ==============================================================
+
+-- [6A] customer_revenue sem cash_flow correspondente (exclui estornados)
+SELECT
+  cr.id            AS revenue_id,
+  cr.customer_id,
+  c.name           AS customer_name,
+  cr.origin_type,
+  cr.origin_id,
+  cr.origin_description,
+  cr.payment_date,
+  cr.payment_amount,
+  cr.payment_method,
+  cr.estornado
+FROM customer_revenue cr
+LEFT JOIN customers c ON c.id = cr.customer_id
+LEFT JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+WHERE cf.id IS NULL
+  AND COALESCE(cr.estornado, false) = false
+  AND cr.payment_amount > 0
+ORDER BY cr.payment_date DESC;
+
+-- ==============================================================
+-- RESUMO EXECUTIVO
+-- ==============================================================
+WITH checks AS (
+  SELECT '1A_orphan_customer'   AS check_id, 'orphan'          AS cat, 'critical' AS sev,
+         COUNT(*) AS n, COALESCE(SUM(cr.payment_amount),0) AS val
+  FROM customer_revenue cr LEFT JOIN customers c ON c.id = cr.customer_id WHERE c.id IS NULL
   UNION ALL
-  -- B: customer mismatch
-  SELECT 'B_customer_mismatch', 'inconsistency', 'critical',
-         COUNT(*), SUM(cr.payment_amount)
-  FROM customer_revenue cr
-  JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-  WHERE cf.customer_id IS NOT NULL
-    AND cf.customer_id <> cr.customer_id
+  SELECT '2A_work_customer_mismatch', 'inconsistency', 'warning',
+         COUNT(*), COALESCE(SUM(cr.payment_amount),0)
+  FROM customer_revenue cr JOIN construction_works cw ON cw.id = cr.origin_id
+  WHERE cr.origin_type = 'construction_work' AND cw.customer_id <> cr.customer_id
   UNION ALL
-  -- C: amount mismatch
-  SELECT 'C_amount_mismatch', 'inconsistency', 'critical',
-         COUNT(*), SUM(ABS(cr.payment_amount - cf.amount))
-  FROM customer_revenue cr
-  JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+  SELECT '2B_cf_customer_mismatch', 'inconsistency', 'critical',
+         COUNT(*), COALESCE(SUM(cr.payment_amount),0)
+  FROM customer_revenue cr JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+  WHERE cf.customer_id IS NOT NULL AND cf.customer_id <> cr.customer_id
+  UNION ALL
+  SELECT '5A_amount_mismatch', 'inconsistency', 'critical',
+         COUNT(*), COALESCE(SUM(ABS(cr.payment_amount - cf.amount)),0)
+  FROM customer_revenue cr JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
   WHERE ABS(cr.payment_amount - cf.amount) > 0.01
   UNION ALL
-  -- F: orphan customer
-  SELECT 'F_orphan_customer', 'orphan', 'critical',
-         COUNT(*), SUM(cr.payment_amount)
-  FROM customer_revenue cr
-  LEFT JOIN customers c ON c.id = cr.customer_id
-  WHERE c.id IS NULL
+  SELECT '6A_missing_cashflow', 'missing_cashflow', 'warning',
+         COUNT(*), COALESCE(SUM(cr.payment_amount),0)
+  FROM customer_revenue cr LEFT JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+  WHERE cf.id IS NULL AND COALESCE(cr.estornado, false) = false AND cr.payment_amount > 0
 )
-SELECT check_id, category, severity, count, valor_total
-FROM issues
-WHERE count > 0
-ORDER BY
-  CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
-  count DESC;
+SELECT check_id, cat AS category, sev AS severity, n AS count, val AS valor_total
+FROM checks WHERE n > 0
+ORDER BY CASE sev WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, n DESC;
 `;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const fmt = (n: number) =>
+  n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+const fmtDate = (d?: string | null) =>
+  d ? new Date(d + 'T12:00:00').toLocaleDateString('pt-BR') : '—';
+
+const today = () => new Date().toISOString().split('T')[0];
+const firstDayOfYear = () => `${new Date().getFullYear()}-01-01`;
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function SeverityIcon({ severity }: { severity: IssueSeverity }) {
+  if (severity === 'critical') return <XCircle className={`h-5 w-5 flex-shrink-0 ${SEVERITY_ICON_CLS[severity]}`} />;
+  if (severity === 'warning') return <AlertTriangle className={`h-5 w-5 flex-shrink-0 ${SEVERITY_ICON_CLS[severity]}`} />;
+  return <Info className={`h-5 w-5 flex-shrink-0 ${SEVERITY_ICON_CLS[severity]}`} />;
+}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -301,6 +507,8 @@ export default function PaymentAudit() {
   const [fixedIds, setFixedIds] = useState<Set<string>>(new Set());
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [showSqlPanel, setShowSqlPanel] = useState(false);
+  const [dateRange, setDateRange] = useState<DateRange>({ from: firstDayOfYear(), to: today() });
+  const [allPeriod, setAllPeriod] = useState(false);
 
   const runAudit = useCallback(async () => {
     setLoading(true);
@@ -310,40 +518,54 @@ export default function PaymentAudit() {
     setActiveFilter('all');
 
     try {
-      const foundIssues: AuditIssue[] = [];
+      const found: AuditIssue[] = [];
 
-      // ── Parallel data fetching ──────────────────────────────────────────
+      // Build date filter for customer_revenue queries
+      const revQuery = supabase
+        .from('customer_revenue')
+        .select(
+          'id, customer_id, origin_type, origin_id, origin_description, ' +
+          'total_amount, paid_amount, balance, payment_date, payment_amount, ' +
+          'payment_method, notes, receipt_number, estornado, created_at, ' +
+          'customers ( id, name )'
+        )
+        .order('payment_date', { ascending: false });
+
+      if (!allPeriod) {
+        revQuery.gte('payment_date', dateRange.from).lte('payment_date', dateRange.to);
+      }
+
+      // ── Parallel fetch ──────────────────────────────────────────────────
       const [
         { data: revenues, error: revErr },
-        { data: cashflows, error: cfErr },
-        { data: orphanCF, error: ocfErr },
+        { data: cashflowsLinked, error: cfErr },
+        { data: cashflowOrphan, error: ocfErr },
+        { data: cashflowIncome, error: ciErr },
         { data: works, error: wErr },
         { data: customers, error: custErr },
-        { data: quotes, error: qErr },
+        { data: quotesApproved, error: qErr },
         { data: installments, error: instErr },
+        { data: workItems, error: wiErr },
       ] = await Promise.all([
-        supabase
-          .from('customer_revenue')
-          .select(
-            'id, customer_id, origin_type, origin_id, origin_description, ' +
-            'total_amount, paid_amount, balance, payment_date, payment_amount, ' +
-            'payment_method, notes, receipt_number, estornado, created_at, ' +
-            'customers ( id, name )'
-          )
-          .order('payment_date', { ascending: false }),
+        revQuery,
 
         supabase
           .from('cash_flow')
-          .select('id, amount, date, description, type, customer_revenue_id, customer_id')
+          .select('id, amount, date, description, type, customer_revenue_id, customer_id, category')
           .eq('type', 'income')
           .not('customer_revenue_id', 'is', null),
 
         supabase
           .from('cash_flow')
-          .select('id, amount, date, description, construction_work_id, customer_id')
+          .select('id, amount, date, description, construction_work_id, customer_id, category')
           .eq('type', 'income')
           .is('customer_revenue_id', null)
           .not('construction_work_id', 'is', null),
+
+        supabase
+          .from('cash_flow')
+          .select('id, amount, date, description, category, business_unit, customer_id, customer_revenue_id, sale_id')
+          .eq('type', 'income'),
 
         supabase
           .from('construction_works')
@@ -355,88 +577,186 @@ export default function PaymentAudit() {
 
         supabase
           .from('quotes')
-          .select('id, customer_id, total_value, payment_status, paid_amount, status')
+          .select('id, customer_id, total_value, payment_status, paid_amount, status, has_installment_schedule')
           .eq('status', 'approved'),
 
         supabase
           .from('quote_installments')
           .select('id, quote_id, installment_number, installment_amount, paid_amount, payment_status, due_date'),
+
+        supabase
+          .from('construction_work_items')
+          .select('id, work_id, item_type, item_name, unit_price, total_price')
+          .or('total_price.eq.0,unit_price.lt.0'),
       ]);
 
-      if (revErr) throw revErr;
-      if (cfErr) throw cfErr;
-      if (ocfErr) throw ocfErr;
-      if (wErr) throw wErr;
-      if (custErr) throw custErr;
-      if (qErr) throw qErr;
-      if (instErr) throw instErr;
+      for (const [err, name] of [
+        [revErr, 'customer_revenue'],
+        [cfErr, 'cash_flow (linked)'],
+        [ocfErr, 'cash_flow (orphan)'],
+        [ciErr, 'cash_flow (income)'],
+        [wErr, 'construction_works'],
+        [custErr, 'customers'],
+        [qErr, 'quotes'],
+        [instErr, 'quote_installments'],
+        [wiErr, 'construction_work_items'],
+      ] as [unknown, string][]) {
+        if (err) throw new Error(`Error loading ${name}: ${(err as any).message}`);
+      }
 
       const workMap = new Map((works || []).map(w => [w.id, w]));
-      const cfByRevId = new Map((cashflows || []).map(cf => [cf.customer_revenue_id, cf]));
+      const cfByRevId = new Map((cashflowsLinked || []).map(cf => [cf.customer_revenue_id, cf]));
       const validCustomerIds = new Set((customers || []).map(c => c.id));
-      const quoteMap = new Map((quotes || []).map(q => [q.id, q]));
+      const quoteMap = new Map((quotesApproved || []).map(q => [q.id, q]));
 
-      // ──────────────────────────────────────────────────────────────────────
-      // CHECK A: Revenues WITHOUT a cash_flow entry (trigger failure / skip)
-      // ──────────────────────────────────────────────────────────────────────
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // DIMENSAO 1 — PAGAMENTOS ORFAOS
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      // [1A] customer_revenue sem customer valido
       for (const rev of revenues || []) {
-        if ((rev as any).estornado) continue;
-        if (!rev.payment_amount || rev.payment_amount === 0) continue;
-
-        const linkedCF = cfByRevId.get(rev.id);
-        if (!linkedCF) {
-          const originLabel = ORIGIN_LABELS[rev.origin_type] || rev.origin_type;
-          foundIssues.push({
-            id: `missing-cf-${rev.id}`,
-            severity: 'warning',
-            category: 'missing_cashflow',
-            title: 'Receita sem entrada no Fluxo de Caixa',
+        if (!validCustomerIds.has(rev.customer_id)) {
+          found.push({
+            id: `orphan-customer-${rev.id}`,
+            severity: 'critical',
+            category: 'orphan',
+            title: 'Pagamento sem cliente valido',
             detail:
-              `O pagamento de ${originLabel} (ID …${rev.id.slice(-8)}) nao possui entrada ` +
-              `correspondente no fluxo de caixa. O trigger de sincronizacao pode ter falhado.`,
+              `customer_revenue.customer_id = "${rev.customer_id}" nao existe na tabela customers. ` +
+              `O cliente pode ter sido excluido apos o cadastro deste pagamento.`,
             revenue_id: rev.id,
             amount: Number(rev.payment_amount),
-            customer_name: (rev.customers as any)?.name,
             payment_date: rev.payment_date,
             fix_description:
-              'A entrada no cash_flow deveria ter sido criada automaticamente pelo trigger. ' +
-              'Verifique se o trigger "trigger_sync_customer_revenue_insert" esta ativo no banco.',
+              'Vincule manualmente a um cliente existente ou exclua o registro apos confirmar que o valor esta registrado corretamente em outro lugar.',
             sql_hint:
-              `-- Criar manualmente a entrada de caixa ausente\n` +
-              `INSERT INTO cash_flow (date, type, category, description, amount, customer_revenue_id)\n` +
-              `VALUES ('${rev.payment_date}', 'income', 'receita_cliente',\n` +
-              `  '${(rev.origin_description || 'Recebimento').replace(/'/g, "''")}',\n` +
-              `  ${rev.payment_amount}, '${rev.id}');`,
+              `SELECT id, name FROM customers ORDER BY name;\n\n` +
+              `UPDATE customer_revenue SET customer_id = '<ID_CLIENTE>'\n` +
+              `WHERE id = '${rev.id}';`,
             auto_fixable: false,
           });
         }
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // CHECK B: customer_id mismatch between customer_revenue and cash_flow
-      // ──────────────────────────────────────────────────────────────────────
+      // [1B] Receitas de obra vinculadas a obra inexistente
+      for (const rev of revenues || []) {
+        if (rev.origin_type !== 'construction_work') continue;
+        const work = workMap.get(rev.origin_id);
+        if (!work) {
+          found.push({
+            id: `orphan-work-${rev.id}`,
+            severity: 'critical',
+            category: 'orphan',
+            title: 'Pagamento vinculado a obra inexistente',
+            detail:
+              `origin_id = "${rev.origin_id}" nao existe em construction_works. ` +
+              `A obra pode ter sido excluida ou o ID foi cadastrado errado.`,
+            revenue_id: rev.id,
+            amount: Number(rev.payment_amount),
+            customer_name: (rev.customers as any)?.name,
+            payment_date: rev.payment_date,
+            work_name: 'OBRA NAO ENCONTRADA',
+            fix_description:
+              'Localize a obra correta para este cliente e atualize o origin_id, ' +
+              'ou exclua o pagamento apos verificacao.',
+            sql_hint:
+              `SELECT id, work_name FROM construction_works\n` +
+              `WHERE customer_id = '${rev.customer_id}';\n\n` +
+              `UPDATE customer_revenue SET origin_id = '<ID_OBRA_CORRETA>'\n` +
+              `WHERE id = '${rev.id}';`,
+            auto_fixable: false,
+          });
+        }
+      }
+
+      // [1C] cash_flow income sem customer, sem customer_revenue_id, sem sale_id
+      // (entradas manuais potencialmente orfas)
+      const orphanIncomeEntries = (cashflowIncome || []).filter(
+        cf => !cf.customer_id && !cf.customer_revenue_id && !cf.sale_id
+      );
+      for (const cf of orphanIncomeEntries) {
+        found.push({
+          id: `orphan-cf-nolink-${cf.id}`,
+          severity: 'info',
+          category: 'orphan',
+          title: 'Entrada de caixa sem vinculo a cliente ou receita',
+          detail:
+            `Entrada de caixa ID …${cf.id.slice(-8)} (${cf.description || cf.category}, ${fmt(Number(cf.amount))}) ` +
+            `nao possui customer_id, customer_revenue_id nem sale_id. ` +
+            `Pode ser um lancamento manual sem rastreabilidade.`,
+          cashflow_id: cf.id,
+          amount: Number(cf.amount),
+          payment_date: cf.date,
+          fix_description:
+            'Verifique se este lancamento manual e legitimo. Se for um pagamento de cliente, vincule ao customer_revenue correto.',
+          sql_hint:
+            `SELECT id, date, category, description, amount, business_unit\n` +
+            `FROM cash_flow WHERE id = '${cf.id}';`,
+          auto_fixable: false,
+        });
+      }
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // DIMENSAO 2 — INCONSISTENCIAS DE VINCULO
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      // [2A] cliente do pagamento != cliente da obra
+      for (const rev of revenues || []) {
+        if (rev.origin_type !== 'construction_work') continue;
+        const work = workMap.get(rev.origin_id);
+        if (!work) continue;
+        if (work.customer_id !== rev.customer_id) {
+          const workCustomerName = (customers || []).find(c => c.id === work.customer_id)?.name;
+          found.push({
+            id: `work-customer-mismatch-${rev.id}`,
+            severity: 'warning',
+            category: 'inconsistency',
+            title: 'Cliente do pagamento difere do cliente da obra',
+            detail:
+              `Obra "${work.work_name}" pertence a "${workCustomerName ?? work.customer_id.slice(-8)}", ` +
+              `mas o pagamento esta vinculado a "${(rev.customers as any)?.name ?? rev.customer_id.slice(-8)}".`,
+            revenue_id: rev.id,
+            amount: Number(rev.payment_amount),
+            customer_name: (rev.customers as any)?.name,
+            work_name: work.work_name,
+            payment_date: rev.payment_date,
+            fix_description: `Corrigir customer_revenue.customer_id para "${workCustomerName}" (cliente da obra).`,
+            sql_hint:
+              `UPDATE customer_revenue SET customer_id = '${work.customer_id}'\nWHERE id = '${rev.id}';\n\n` +
+              `UPDATE cash_flow SET customer_id = '${work.customer_id}'\nWHERE customer_revenue_id = '${rev.id}';`,
+            fix_action: async () => {
+              await supabase.from('customer_revenue').update({ customer_id: work.customer_id }).eq('id', rev.id);
+              const linkedCF = cfByRevId.get(rev.id);
+              if (linkedCF) await supabase.from('cash_flow').update({ customer_id: work.customer_id }).eq('id', linkedCF.id);
+            },
+            auto_fixable: true,
+          });
+        }
+      }
+
+      // [2B] customer_id divergente entre customer_revenue e cash_flow vinculado
       for (const rev of revenues || []) {
         if ((rev as any).estornado) continue;
         const linkedCF = cfByRevId.get(rev.id);
         if (!linkedCF) continue;
         if (linkedCF.customer_id && linkedCF.customer_id !== rev.customer_id) {
-          const cfCustomerName = (customers || []).find(c => c.id === linkedCF.customer_id)?.name;
-          foundIssues.push({
-            id: `customer-mismatch-${rev.id}`,
+          const cfCustName = (customers || []).find(c => c.id === linkedCF.customer_id)?.name;
+          found.push({
+            id: `cf-customer-mismatch-${rev.id}`,
             severity: 'critical',
             category: 'inconsistency',
-            title: 'Cliente divergente entre Receita e Fluxo de Caixa',
+            title: 'Cliente divergente: Receita vs Fluxo de Caixa',
             detail:
-              `customer_revenue aponta para cliente "${(rev.customers as any)?.name ?? 'desconhecido'}" ` +
-              `mas cash_flow aponta para "${cfCustomerName ?? 'desconhecido'}". ` +
-              `Os registros estao vinculados (customer_revenue_id), mas com clientes diferentes.`,
+              `customer_revenue aponta para "${(rev.customers as any)?.name ?? '?'}" ` +
+              `mas o cash_flow vinculado aponta para "${cfCustName ?? '?'}". ` +
+              `Os dois registros estao vinculados por customer_revenue_id mas com clientes diferentes.`,
             revenue_id: rev.id,
             cashflow_id: linkedCF.id,
             amount: Number(rev.payment_amount),
             customer_name: (rev.customers as any)?.name,
             payment_date: rev.payment_date,
-            fix_description: 'Atualizar cash_flow.customer_id para o mesmo cliente registrado na receita.',
-            sql_hint: `UPDATE cash_flow SET customer_id = '${rev.customer_id}' WHERE id = '${linkedCF.id}';`,
+            fix_description: 'Atualizar cash_flow.customer_id para coincidir com customer_revenue.',
+            sql_hint: `UPDATE cash_flow SET customer_id = '${rev.customer_id}'\nWHERE id = '${linkedCF.id}';`,
             fix_action: async () => {
               await supabase.from('cash_flow').update({ customer_id: rev.customer_id }).eq('id', linkedCF.id);
             },
@@ -445,9 +765,151 @@ export default function PaymentAudit() {
         }
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // CHECK C: Amount mismatch between customer_revenue and cash_flow
-      // ──────────────────────────────────────────────────────────────────────
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // DIMENSAO 3 — DUPLICACOES
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      // [3A] Entradas de caixa legadas (construction_work_id, sem customer_revenue_id)
+      // coexistindo com customer_revenue moderno para a mesma obra
+      const worksWithRevenue = new Set(
+        (revenues || [])
+          .filter(r => r.origin_type === 'construction_work' && !(r as any).estornado)
+          .map(r => r.origin_id)
+      );
+      for (const cf of cashflowOrphan || []) {
+        if (!cf.construction_work_id) continue;
+        if (!worksWithRevenue.has(cf.construction_work_id)) continue;
+        const work = workMap.get(cf.construction_work_id);
+        found.push({
+          id: `duplicate-cf-legacy-${cf.id}`,
+          severity: 'warning',
+          category: 'duplicate',
+          title: 'Entrada de caixa legada duplica receita da obra',
+          detail:
+            `Obra "${work?.work_name ?? cf.construction_work_id.slice(-8)}" ` +
+            `tem entrada de caixa ID …${cf.id.slice(-8)} sem vinculo a customer_revenue, ` +
+            `mas ja existe customer_revenue para esta obra. ` +
+            `Provavelmente e um registro criado antes da migracao para o sistema de receitas.`,
+          cashflow_id: cf.id,
+          amount: Number(cf.amount),
+          work_name: work?.work_name,
+          payment_date: cf.date,
+          fix_description:
+            'Confirme se este valor ja esta representado em customer_revenue. Se sim, exclua esta entrada legada.',
+          sql_hint:
+            `SELECT * FROM customer_revenue WHERE origin_id = '${cf.construction_work_id}';\n\n` +
+            `-- Se confirmado como duplicata:\nDELETE FROM cash_flow WHERE id = '${cf.id}';`,
+          fix_action: async () => {
+            await supabase.from('cash_flow').delete().eq('id', cf.id);
+          },
+          auto_fixable: true,
+        });
+      }
+
+      // [3B] Detectar duplicatas exatas em customer_revenue (mesmo origin, nao estornado)
+      const revByOrigin = new Map<string, typeof revenues>();
+      for (const rev of revenues || []) {
+        if ((rev as any).estornado) continue;
+        const key = `${rev.customer_id}|${rev.origin_type}|${rev.origin_id}`;
+        if (!revByOrigin.has(key)) revByOrigin.set(key, []);
+        revByOrigin.get(key)!.push(rev);
+      }
+      for (const [, group] of revByOrigin.entries()) {
+        if (!group || group.length < 2) continue;
+        for (const rev of group.slice(1)) {
+          const originLabel = ORIGIN_LABELS[rev.origin_type] || rev.origin_type;
+          found.push({
+            id: `duplicate-revenue-${rev.id}`,
+            severity: 'critical',
+            category: 'duplicate',
+            title: `Receita duplicada: mesmo ${originLabel} registrado mais de uma vez`,
+            detail:
+              `Existem ${group.length} registros em customer_revenue com o mesmo (customer_id, origin_type, origin_id). ` +
+              `IDs: ${group.map(r => '…' + r.id.slice(-8)).join(', ')}. ` +
+              `A unique constraint deveria impedir isso — pode indicar dados corrompidos.`,
+            revenue_id: rev.id,
+            amount: Number(rev.payment_amount),
+            customer_name: (rev.customers as any)?.name,
+            payment_date: rev.payment_date,
+            fix_description:
+              'Mantenha apenas o registro mais recente (ou o correto) e exclua os demais. ' +
+              'Verifique se cada entrada tem um cash_flow vinculado antes de excluir.',
+            sql_hint:
+              `SELECT id, payment_date, payment_amount, created_at\n` +
+              `FROM customer_revenue\n` +
+              `WHERE customer_id = '${rev.customer_id}'\n` +
+              `  AND origin_type = '${rev.origin_type}'\n` +
+              `  AND origin_id = '${rev.origin_id}'\n` +
+              `ORDER BY created_at DESC;`,
+            auto_fixable: false,
+          });
+        }
+      }
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // DIMENSAO 4 — CATEGORIZACOES INCORRETAS
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      // [4A] cash_flow income com categoria que parece despesa/custo
+      for (const cf of cashflowIncome || []) {
+        const cat = (cf.category || '').toLowerCase();
+        const isSuspicious = COST_LIKE_INCOME_CATEGORIES.some(c => cat.includes(c.toLowerCase()));
+        if (!isSuspicious) continue;
+        found.push({
+          id: `bad-category-cf-${cf.id}`,
+          severity: 'warning',
+          category: 'bad_category',
+          title: 'Receita com categoria de custo/item',
+          detail:
+            `A entrada de caixa ID …${cf.id.slice(-8)} esta como "income" (receita) ` +
+            `mas tem categoria "${cf.category}", que parece ser um custo ou item de obra.`,
+          cashflow_id: cf.id,
+          amount: Number(cf.amount),
+          payment_date: cf.date,
+          fix_description:
+            'Verifique se esta entrada deveria ser do tipo "expense" ou se a categoria esta errada. ' +
+            'Corrija o tipo ou a categoria conforme o lancamento real.',
+          sql_hint:
+            `UPDATE cash_flow SET category = 'receita_cliente'\nWHERE id = '${cf.id}';\n\n` +
+            `-- OU, se for na verdade uma despesa:\n` +
+            `UPDATE cash_flow SET type = 'expense', category = 'Outras Despesas'\nWHERE id = '${cf.id}';`,
+          auto_fixable: false,
+        });
+      }
+
+      // [4B] construction_work_items com preco zero (item sem valor)
+      for (const wi of workItems || []) {
+        if (Number(wi.total_price) === 0 || Number(wi.unit_price) < 0) {
+          const work = workMap.get(wi.work_id);
+          found.push({
+            id: `bad-category-wi-zero-${wi.id}`,
+            severity: 'info',
+            category: 'bad_category',
+            title: 'Item de obra com valor zerado ou negativo',
+            detail:
+              `Item "${wi.item_name}" (tipo: ${wi.item_type}) da obra "${work?.work_name ?? wi.work_id.slice(-8)}" ` +
+              `tem preco_unitario = ${fmt(Number(wi.unit_price))} e total = ${fmt(Number(wi.total_price))}. ` +
+              `Itens sem valor nao contribuem para o custo da obra e podem ser cadastros errados.`,
+            work_item_id: wi.id,
+            amount: Number(wi.total_price),
+            work_name: work?.work_name,
+            fix_description:
+              'Corrija o preco unitario e a quantidade do item, ou exclua-o se for um cadastro equivocado.',
+            sql_hint:
+              `UPDATE construction_work_items\n` +
+              `SET unit_price = <VALOR_CORRETO>,\n` +
+              `    total_price = quantity * <VALOR_CORRETO>\n` +
+              `WHERE id = '${wi.id}';`,
+            auto_fixable: false,
+          });
+        }
+      }
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // DIMENSAO 5 — VALORES INCONSISTENTES
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      // [5A] Valor divergente entre customer_revenue e cash_flow
       for (const rev of revenues || []) {
         if ((rev as any).estornado) continue;
         const linkedCF = cfByRevId.get(rev.id);
@@ -455,23 +917,23 @@ export default function PaymentAudit() {
         const revAmt = Number(rev.payment_amount);
         const cfAmt = Number(linkedCF.amount);
         if (Math.abs(revAmt - cfAmt) > 0.01) {
-          foundIssues.push({
+          found.push({
             id: `amount-mismatch-${rev.id}`,
             severity: 'critical',
             category: 'inconsistency',
-            title: 'Valor divergente entre Receita e Fluxo de Caixa',
+            title: 'Valor divergente: Receita vs Fluxo de Caixa',
             detail:
               `customer_revenue.payment_amount = ${fmt(revAmt)} ` +
-              `mas cash_flow.amount = ${fmt(cfAmt)}. ` +
-              `Diferenca: ${fmt(Math.abs(revAmt - cfAmt))}. ` +
-              `Os dois devem estar sempre sincronizados.`,
+              `vs cash_flow.amount = ${fmt(cfAmt)}. ` +
+              `Diferenca de ${fmt(Math.abs(revAmt - cfAmt))}. ` +
+              `Os dois devem ser sempre identicos — o cash_flow e gerado automaticamente a partir da receita.`,
             revenue_id: rev.id,
             cashflow_id: linkedCF.id,
             amount: revAmt,
             customer_name: (rev.customers as any)?.name,
             payment_date: rev.payment_date,
-            fix_description: `Corrigir cash_flow.amount para ${fmt(revAmt)} (valor da receita e a fonte da verdade).`,
-            sql_hint: `UPDATE cash_flow SET amount = ${revAmt} WHERE id = '${linkedCF.id}';`,
+            fix_description: `Corrigir cash_flow.amount para ${fmt(revAmt)} (customer_revenue e a fonte da verdade).`,
+            sql_hint: `UPDATE cash_flow SET amount = ${revAmt}\nWHERE id = '${linkedCF.id}';`,
             fix_action: async () => {
               await supabase.from('cash_flow').update({ amount: revAmt }).eq('id', linkedCF.id);
             },
@@ -480,226 +942,175 @@ export default function PaymentAudit() {
         }
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // CHECK D: Works with wrong or missing customer linkage
-      // ──────────────────────────────────────────────────────────────────────
+      // [5B] customer_revenue.balance != total_amount - paid_amount
       for (const rev of revenues || []) {
-        if (rev.origin_type !== 'construction_work') continue;
-
-        const work = workMap.get(rev.origin_id);
-        if (!work) {
-          foundIssues.push({
-            id: `orphan-work-${rev.id}`,
-            severity: 'critical',
-            category: 'orphan',
-            title: 'Pagamento vinculado a obra inexistente',
-            detail:
-              `O pagamento referencia origin_id = ${rev.origin_id} ` +
-              `mas nenhuma obra com este ID existe na tabela construction_works. ` +
-              `A obra pode ter sido excluida.`,
-            revenue_id: rev.id,
-            amount: Number(rev.payment_amount),
-            customer_name: (rev.customers as any)?.name,
-            payment_date: rev.payment_date,
-            work_name: 'OBRA NAO ENCONTRADA',
-            fix_description:
-              'Verifique se a obra foi excluida. Se sim, considere atualizar origin_id para a obra correta ' +
-              'ou excluir este pagamento apos verificacao manual.',
-            sql_hint:
-              `-- Verificar se existem obras para este cliente:\n` +
-              `SELECT id, work_name FROM construction_works\n` +
-              `WHERE customer_id = '${rev.customer_id}';\n\n` +
-              `-- Depois vincular ao ID correto:\n` +
-              `UPDATE customer_revenue SET origin_id = '<ID_DA_OBRA_CORRETA>'\n` +
-              `WHERE id = '${rev.id}';`,
-            auto_fixable: false,
-          });
-        } else if (work.customer_id !== rev.customer_id) {
-          const workCustomerName = (customers || []).find(c => c.id === work.customer_id)?.name;
-          foundIssues.push({
-            id: `work-customer-mismatch-${rev.id}`,
+        const total = Number(rev.total_amount);
+        const paid = Number(rev.paid_amount);
+        const balance = Number(rev.balance);
+        const expectedBalance = total - paid;
+        if (Math.abs(balance - expectedBalance) > 0.01 && total > 0) {
+          found.push({
+            id: `balance-mismatch-${rev.id}`,
             severity: 'warning',
             category: 'inconsistency',
-            title: 'Cliente do pagamento diferente do cliente da obra',
+            title: 'Saldo incorreto na receita',
             detail:
-              `A obra "${work.work_name}" pertence ao cliente "${workCustomerName ?? work.customer_id.slice(-8)}" ` +
-              `mas o pagamento esta vinculado ao cliente "${(rev.customers as any)?.name ?? rev.customer_id.slice(-8)}". ` +
-              `Isso pode indicar um pagamento cadastrado no cliente errado.`,
+              `customer_revenue.balance = ${fmt(balance)} mas deveria ser ` +
+              `total_amount (${fmt(total)}) - paid_amount (${fmt(paid)}) = ${fmt(expectedBalance)}. ` +
+              `Diferenca de ${fmt(Math.abs(balance - expectedBalance))}.`,
             revenue_id: rev.id,
             amount: Number(rev.payment_amount),
             customer_name: (rev.customers as any)?.name,
-            work_name: work.work_name,
             payment_date: rev.payment_date,
-            fix_description:
-              `Corrigir customer_revenue.customer_id para o cliente da obra: "${workCustomerName}".`,
-            sql_hint:
-              `UPDATE customer_revenue SET customer_id = '${work.customer_id}'\n` +
-              `WHERE id = '${rev.id}';\n\n` +
-              `-- Tambem atualize o cash_flow vinculado:\n` +
-              `UPDATE cash_flow SET customer_id = '${work.customer_id}'\n` +
-              `WHERE customer_revenue_id = '${rev.id}';`,
+            fix_description: `Recalcular balance = ${fmt(expectedBalance)}.`,
+            sql_hint: `UPDATE customer_revenue\nSET balance = ${expectedBalance.toFixed(2)}\nWHERE id = '${rev.id}';`,
             fix_action: async () => {
-              await supabase.from('customer_revenue').update({ customer_id: work.customer_id }).eq('id', rev.id);
-              const linkedCF = cfByRevId.get(rev.id);
-              if (linkedCF) {
-                await supabase.from('cash_flow').update({ customer_id: work.customer_id }).eq('id', linkedCF.id);
-              }
+              await supabase.from('customer_revenue').update({ balance: expectedBalance }).eq('id', rev.id);
             },
             auto_fixable: true,
           });
         }
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // CHECK E: Legacy/duplicate cash_flow entries for works
-      //          (has construction_work_id, no customer_revenue_id)
-      //          that coexist with proper customer_revenue records
-      // ──────────────────────────────────────────────────────────────────────
-      const worksWithRevenue = new Set(
-        (revenues || [])
-          .filter(r => r.origin_type === 'construction_work' && !(r as any).estornado)
-          .map(r => r.origin_id)
-      );
-
-      for (const cf of orphanCF || []) {
-        if (!cf.construction_work_id) continue;
-        if (!worksWithRevenue.has(cf.construction_work_id)) continue;
-
-        const work = workMap.get(cf.construction_work_id);
-        foundIssues.push({
-          id: `duplicate-cf-${cf.id}`,
-          severity: 'warning',
-          category: 'duplicate',
-          title: 'Entrada de caixa legada/duplicada para obra',
-          detail:
-            `A obra "${work?.work_name ?? cf.construction_work_id.slice(-8)}" ` +
-            `possui uma entrada no cash_flow (ID …${cf.id.slice(-8)}) SEM vinculo a customer_revenue, ` +
-            `mas ja existem registros em customer_revenue para esta obra. ` +
-            `Este pode ser um registro legado criado antes da implementacao do sistema de receitas.`,
-          cashflow_id: cf.id,
-          amount: Number(cf.amount),
-          work_name: work?.work_name,
-          payment_date: cf.date,
-          fix_description:
-            'Se confirmado como entrada legada/duplicada, esta entrada pode ser removida do fluxo de caixa. ' +
-            'Verifique primeiro se o valor corresponde a algum pagamento ja registrado em customer_revenue.',
-          sql_hint: `DELETE FROM cash_flow WHERE id = '${cf.id}';\n-- Confirme antes verificando: SELECT * FROM cash_flow WHERE id = '${cf.id}';`,
-          fix_action: async () => {
-            await supabase.from('cash_flow').delete().eq('id', cf.id);
-          },
-          auto_fixable: true,
-        });
+      // [5C] Soma das parcelas != total do orcamento
+      const instByQuote = new Map<string, typeof installments>();
+      for (const inst of installments || []) {
+        if (!instByQuote.has(inst.quote_id)) instByQuote.set(inst.quote_id, []);
+        instByQuote.get(inst.quote_id)!.push(inst);
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // CHECK F: Revenues with non-existent customer_id
-      // ──────────────────────────────────────────────────────────────────────
-      for (const rev of revenues || []) {
-        if (!validCustomerIds.has(rev.customer_id)) {
-          foundIssues.push({
-            id: `orphan-customer-${rev.id}`,
-            severity: 'critical',
-            category: 'orphan',
-            title: 'Pagamento sem cliente valido',
+      for (const [qId, insts] of instByQuote.entries()) {
+        const quote = quoteMap.get(qId);
+        if (!quote || !quote.has_installment_schedule) continue;
+        const somaParc = (insts || []).reduce((s, i) => s + Number(i.installment_amount), 0);
+        const quoteTotal = Number(quote.total_value);
+        if (Math.abs(somaParc - quoteTotal) > 0.01) {
+          const custName = (customers || []).find(c => c.id === quote.customer_id)?.name;
+          found.push({
+            id: `installment-sum-${qId}`,
+            severity: 'warning',
+            category: 'installment_mismatch',
+            title: 'Soma das parcelas difere do total do orcamento',
             detail:
-              `customer_revenue.customer_id = ${rev.customer_id} ` +
-              `nao corresponde a nenhum cliente na tabela customers. ` +
-              `O cliente pode ter sido excluido apos o registro do pagamento.`,
-            revenue_id: rev.id,
-            amount: Number(rev.payment_amount),
-            payment_date: rev.payment_date,
+              `Orcamento …${qId.slice(-8)} (cliente: ${custName ?? '?'}): ` +
+              `total = ${fmt(quoteTotal)}, soma das ${insts?.length ?? 0} parcelas = ${fmt(somaParc)}. ` +
+              `Diferenca de ${fmt(Math.abs(somaParc - quoteTotal))}.`,
+            amount: quoteTotal,
+            customer_name: custName,
             fix_description:
-              'Vincule manualmente este pagamento a um cliente existente ou exclua o registro ' +
-              'apos verificar que o valor ja foi registrado corretamente em outro lugar.',
+              'Revise as parcelas deste orcamento — o total das parcelas deve ser igual ao valor total do orcamento.',
             sql_hint:
-              `-- Listar todos os clientes disponiveis:\n` +
-              `SELECT id, name FROM customers ORDER BY name;\n\n` +
-              `-- Depois vincular ao cliente correto:\n` +
-              `UPDATE customer_revenue SET customer_id = '<ID_DO_CLIENTE>'\n` +
-              `WHERE id = '${rev.id}';`,
+              `SELECT installment_number, installment_amount, payment_status\n` +
+              `FROM quote_installments WHERE quote_id = '${qId}'\n` +
+              `ORDER BY installment_number;\n\n` +
+              `-- Total do orcamento:\nSELECT total_value FROM quotes WHERE id = '${qId}';`,
             auto_fixable: false,
           });
         }
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // CHECK G: Quote installments paid but no revenue record found
-      // ──────────────────────────────────────────────────────────────────────
+      // [5D] Parcelas pagas sem customer_revenue correspondente
       const revenueQuoteIds = new Set(
-        (revenues || [])
-          .filter(r => r.origin_type === 'quote')
-          .map(r => r.origin_id)
+        (revenues || []).filter(r => r.origin_type === 'quote').map(r => r.origin_id)
       );
-
       for (const inst of installments || []) {
         if (inst.payment_status !== 'paid') continue;
         if (revenueQuoteIds.has(inst.quote_id)) continue;
-
         const quote = quoteMap.get(inst.quote_id);
         if (!quote) continue;
-        const customerName = (customers || []).find(c => c.id === quote.customer_id)?.name;
-
-        foundIssues.push({
+        const custName = (customers || []).find(c => c.id === quote.customer_id)?.name;
+        found.push({
           id: `installment-no-revenue-${inst.id}`,
           severity: 'warning',
           category: 'installment_mismatch',
-          title: 'Parcela paga sem registro em Receitas de Clientes',
+          title: 'Parcela paga sem receita registrada',
           detail:
-            `A parcela #${inst.installment_number} do orcamento ${inst.quote_id.slice(-8)} ` +
-            `esta marcada como "paga" (${fmt(Number(inst.paid_amount))}) ` +
-            `mas nao existe nenhum registro correspondente em customer_revenue para este orcamento.`,
+            `Parcela #${inst.installment_number} do orcamento …${inst.quote_id.slice(-8)} ` +
+            `(${custName ?? '?'}) esta marcada como paga (${fmt(Number(inst.paid_amount))}) ` +
+            `mas nenhuma entrada em customer_revenue existe para este orcamento.`,
           amount: Number(inst.paid_amount),
-          customer_name: customerName,
+          customer_name: custName,
           payment_date: inst.due_date,
           fix_description:
-            'Registre manualmente o pagamento em Receitas de Clientes vinculando ao orcamento, ' +
+            'Registre o pagamento em Receitas de Clientes vinculando ao orcamento, ' +
             'ou verifique se a parcela foi marcada como paga por engano.',
           sql_hint:
-            `-- Verificar o orcamento:\n` +
-            `SELECT id, total_value, payment_status, paid_amount\n` +
-            `FROM quotes WHERE id = '${inst.quote_id}';\n\n` +
-            `-- Verificar parcelas:\n` +
+            `SELECT id, total_value, payment_status FROM quotes WHERE id = '${inst.quote_id}';\n` +
             `SELECT * FROM quote_installments WHERE quote_id = '${inst.quote_id}';`,
           auto_fixable: false,
         });
       }
 
-      // ── Build summary ─────────────────────────────────────────────────────
-      const issuesByCategory: Record<string, number> = {};
-      const issuesBySeverity: Record<string, number> = {};
-      for (const issue of foundIssues) {
-        issuesByCategory[issue.category] = (issuesByCategory[issue.category] || 0) + 1;
-        issuesBySeverity[issue.severity] = (issuesBySeverity[issue.severity] || 0) + 1;
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // DIMENSAO 6 — RECEITAS SEM FC
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      for (const rev of revenues || []) {
+        if ((rev as any).estornado) continue;
+        if (!rev.payment_amount || Number(rev.payment_amount) === 0) continue;
+        const linkedCF = cfByRevId.get(rev.id);
+        if (!linkedCF) {
+          const originLabel = ORIGIN_LABELS[rev.origin_type] || rev.origin_type;
+          found.push({
+            id: `missing-cf-${rev.id}`,
+            severity: 'warning',
+            category: 'missing_cashflow',
+            title: 'Receita sem entrada no Fluxo de Caixa',
+            detail:
+              `Pagamento de ${originLabel} (ID …${rev.id.slice(-8)}) nao possui entrada correspondente no cash_flow. ` +
+              `O trigger de sincronizacao pode ter falhado ou o registro foi inserido manualmente.`,
+            revenue_id: rev.id,
+            amount: Number(rev.payment_amount),
+            customer_name: (rev.customers as any)?.name,
+            payment_date: rev.payment_date,
+            fix_description:
+              'Verifique se o trigger "trigger_sync_customer_revenue_insert" esta ativo. ' +
+              'Use o SQL abaixo para criar a entrada manualmente se necessario.',
+            sql_hint:
+              `INSERT INTO cash_flow\n` +
+              `  (date, type, category, description, amount, customer_revenue_id, customer_id)\n` +
+              `VALUES\n` +
+              `  ('${rev.payment_date}', 'income', 'receita_cliente',\n` +
+              `   '${(rev.origin_description || 'Recebimento').replace(/'/g, "''")}',\n` +
+              `   ${rev.payment_amount}, '${rev.id}', '${rev.customer_id}');`,
+            auto_fixable: false,
+          });
+        }
       }
 
-      const totalAtRisk = foundIssues.reduce((sum, i) => sum + i.amount, 0);
+      // ── Summary ──────────────────────────────────────────────────────────
+      const byCategory: Record<string, number> = {};
+      const bySeverity: Record<string, number> = {};
+      for (const issue of found) {
+        byCategory[issue.category] = (byCategory[issue.category] || 0) + 1;
+        bySeverity[issue.severity] = (bySeverity[issue.severity] || 0) + 1;
+      }
 
       setSummary({
         total_revenues: (revenues || []).length,
-        total_cashflows_linked: (cashflows || []).length,
+        total_cashflows_linked: (cashflowsLinked || []).length,
         total_works: (works || []).length,
         total_customers: (customers || []).length,
-        total_issues: foundIssues.length,
-        total_at_risk: totalAtRisk,
-        fixed_count: 0,
-        issues_by_category: issuesByCategory,
-        issues_by_severity: issuesBySeverity,
+        total_issues: found.length,
+        total_at_risk: found.reduce((s, i) => s + i.amount, 0),
+        issues_by_category: byCategory,
+        issues_by_severity: bySeverity,
         ran_at: new Date().toLocaleString('pt-BR'),
+        period_label: allPeriod
+          ? 'Todo o periodo'
+          : `${fmtDate(dateRange.from)} — ${fmtDate(dateRange.to)}`,
       });
-
-      setIssues(foundIssues);
+      setIssues(found);
     } catch (err) {
       console.error('Audit error:', err);
-      alert('Erro ao executar auditoria. Verifique o console.');
+      alert(`Erro ao executar auditoria: ${(err as Error).message}`);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [dateRange, allPeriod]);
 
   const applyFix = async (issue: AuditIssue) => {
     if (!issue.auto_fixable || !issue.fix_action) return;
     if (!confirm(`Aplicar correcao automatica?\n\n${issue.fix_description}`)) return;
-
     setFixing(issue.id);
     try {
       await issue.fix_action();
@@ -720,68 +1131,66 @@ export default function PaymentAudit() {
     });
   };
 
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
   const exportTxt = () => {
     if (!summary) return;
     const openIss = issues.filter(i => !fixedIds.has(i.id));
-    const lines: string[] = [
+    const lines = [
       '================================================================',
-      '   RELATORIO DE AUDITORIA DE INTEGRIDADE DE PAGAMENTOS',
-      `   Data: ${summary.ran_at}`,
+      '  RELATORIO DE AUDITORIA DE INTEGRIDADE DE PAGAMENTOS - ALIANCER',
+      `  Data: ${summary.ran_at}`,
+      `  Periodo: ${summary.period_label}`,
       '================================================================',
       '',
       'RESUMO EXECUTIVO',
-      '----------------',
-      `Receitas em customer_revenue : ${summary.total_revenues}`,
-      `Entradas de caixa vinculadas : ${summary.total_cashflows_linked}`,
-      `Obras cadastradas            : ${summary.total_works}`,
-      `Clientes cadastrados         : ${summary.total_customers}`,
-      `Problemas detectados         : ${summary.total_issues}`,
-      `Problemas corrigidos         : ${fixedIds.size}`,
-      `Problemas pendentes          : ${openIss.length}`,
-      `Valor total em risco         : ${fmt(summary.total_at_risk)}`,
+      `  Receitas auditadas   : ${summary.total_revenues}`,
+      `  FC vinculados        : ${summary.total_cashflows_linked}`,
+      `  Obras                : ${summary.total_works}`,
+      `  Clientes             : ${summary.total_customers}`,
+      `  Problemas detectados : ${summary.total_issues}`,
+      `  Corrigidos           : ${fixedIds.size}`,
+      `  Pendentes            : ${openIss.length}`,
+      `  Valor em risco       : ${fmt(summary.total_at_risk)}`,
       '',
-      'PROBLEMAS POR CATEGORIA',
-      '-----------------------',
+      'POR CATEGORIA',
       ...Object.entries(summary.issues_by_category).map(
         ([k, v]) => `  ${CATEGORY_LABELS[k as IssueCategory] ?? k}: ${v}`
       ),
       '',
-      'PROBLEMAS POR SEVERIDADE',
-      '------------------------',
+      'POR SEVERIDADE',
       ...Object.entries(summary.issues_by_severity).map(
         ([k, v]) => `  ${SEVERITY_LABEL[k as IssueSeverity] ?? k}: ${v}`
       ),
       '',
-      'DETALHES DOS PROBLEMAS PENDENTES',
-      '---------------------------------',
+      'PROBLEMAS PENDENTES',
+      '-------------------',
     ];
-
     for (const issue of openIss) {
       lines.push(`[${SEVERITY_LABEL[issue.severity]}] ${issue.title}`);
-      lines.push(`  Categoria  : ${CATEGORY_LABELS[issue.category]}`);
-      lines.push(`  Valor      : ${fmt(issue.amount)}`);
-      if (issue.customer_name) lines.push(`  Cliente    : ${issue.customer_name}`);
-      if (issue.work_name) lines.push(`  Obra       : ${issue.work_name}`);
-      if (issue.payment_date) lines.push(`  Data       : ${fmtDate(issue.payment_date)}`);
-      lines.push(`  Descricao  : ${issue.detail}`);
-      if (issue.fix_description) lines.push(`  Acao       : ${issue.fix_description}`);
+      lines.push(`  Categoria : ${CATEGORY_LABELS[issue.category]}`);
+      lines.push(`  Valor     : ${fmt(issue.amount)}`);
+      if (issue.customer_name) lines.push(`  Cliente   : ${issue.customer_name}`);
+      if (issue.work_name) lines.push(`  Obra      : ${issue.work_name}`);
+      if (issue.payment_date) lines.push(`  Data      : ${fmtDate(issue.payment_date)}`);
+      lines.push(`  Detalhe   : ${issue.detail}`);
+      if (issue.fix_description) lines.push(`  Acao      : ${issue.fix_description}`);
       if (issue.sql_hint) lines.push(`  SQL:\n${issue.sql_hint.split('\n').map(l => '    ' + l).join('\n')}`);
       lines.push('');
     }
-
     lines.push('================================================================');
-    lines.push('QUERIES SQL DE AUDITORIA (SOMENTE LEITURA)');
+    lines.push('QUERIES SQL DE AUDITORIA COMPLETA (SOMENTE LEITURA)');
     lines.push('================================================================');
     lines.push('');
     lines.push(SQL_AUDIT_QUERIES);
-    lines.push('================================================================');
-    lines.push('FIM DO RELATORIO');
 
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `auditoria_pagamentos_${new Date().toISOString().split('T')[0]}.txt`;
+    a.download = `auditoria_${new Date().toISOString().split('T')[0]}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -800,29 +1209,48 @@ export default function PaymentAudit() {
   const filteredIssues = openIssues.filter(i =>
     activeFilter === 'all' || i.category === activeFilter
   );
-
   const criticalCount = openIssues.filter(i => i.severity === 'critical').length;
   const warningCount = openIssues.filter(i => i.severity === 'warning').length;
   const autoFixableCount = openIssues.filter(i => i.auto_fixable).length;
 
+  // Checklist items: [label, passing]
+  const checklist: [string, boolean][] = [
+    ['Todos os pagamentos possuem cliente valido', openIssues.filter(i => i.id.startsWith('orphan-customer')).length === 0],
+    ['Pagamentos de obra vinculados a obras existentes', openIssues.filter(i => i.id.startsWith('orphan-work')).length === 0],
+    ['Cliente do pagamento coincide com cliente da obra', openIssues.filter(i => i.id.startsWith('work-customer-mismatch')).length === 0],
+    ['customer_id consistente entre receita e cash_flow', openIssues.filter(i => i.id.startsWith('cf-customer-mismatch')).length === 0],
+    ['Sem entradas de caixa duplicadas/legadas para obras', openIssues.filter(i => i.id.startsWith('duplicate-cf')).length === 0],
+    ['Sem receitas duplicadas no customer_revenue', openIssues.filter(i => i.id.startsWith('duplicate-revenue')).length === 0],
+    ['Categorizacoes de receitas corretas no cash_flow', openIssues.filter(i => i.category === 'bad_category').length === 0],
+    ['Valores identicos entre receita e cash_flow', openIssues.filter(i => i.id.startsWith('amount-mismatch')).length === 0],
+    ['Saldos calculados corretamente', openIssues.filter(i => i.id.startsWith('balance-mismatch')).length === 0],
+    ['Soma de parcelas = total do orcamento', openIssues.filter(i => i.id.startsWith('installment-sum')).length === 0],
+    ['Parcelas pagas tem receitas registradas', openIssues.filter(i => i.id.startsWith('installment-no-revenue')).length === 0],
+    ['Todas as receitas tem entrada no fluxo de caixa', openIssues.filter(i => i.category === 'missing_cashflow').length === 0],
+  ];
+
   return (
     <div className="space-y-6">
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+
+      {/* ── Header card ────────────────────────────────────────────────────── */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
               <ShieldCheck className="h-7 w-7 text-blue-600" />
               Auditoria de Integridade de Pagamentos
             </h2>
-            <p className="text-gray-500 mt-1 text-sm max-w-xl">
-              Varredura completa de <code className="bg-gray-100 px-1 rounded text-xs">customer_revenue</code>,{' '}
-              <code className="bg-gray-100 px-1 rounded text-xs">cash_flow</code> e{' '}
-              <code className="bg-gray-100 px-1 rounded text-xs">construction_works</code> para detectar
-              inconsistencias, duplicacoes e pagamentos orfaos.
+            <p className="text-gray-500 mt-1 text-sm max-w-2xl">
+              Verifica 6 dimensoes:{' '}
+              <span className="font-medium text-gray-700">Pagamentos Orfaos</span>,{' '}
+              <span className="font-medium text-gray-700">Inconsistencias de Vinculo</span>,{' '}
+              <span className="font-medium text-gray-700">Duplicacoes</span>,{' '}
+              <span className="font-medium text-gray-700">Categorizacoes Incorretas</span>,{' '}
+              <span className="font-medium text-gray-700">Valores Inconsistentes</span>{' e '}
+              <span className="font-medium text-gray-700">FC Ausente</span>.
             </p>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
             <button
               onClick={() => setShowSqlPanel(v => !v)}
               className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm text-gray-600"
@@ -831,15 +1259,13 @@ export default function PaymentAudit() {
               SQL
             </button>
             {summary && (
-              <>
-                <button
-                  onClick={exportTxt}
-                  className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm text-gray-600"
-                >
-                  <Download className="h-4 w-4" />
-                  Relatorio .txt
-                </button>
-              </>
+              <button
+                onClick={exportTxt}
+                className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm text-gray-600"
+              >
+                <Download className="h-4 w-4" />
+                Exportar
+              </button>
             )}
             <button
               onClick={runAudit}
@@ -852,21 +1278,61 @@ export default function PaymentAudit() {
           </div>
         </div>
 
-        {/* SQL panel */}
+        {/* ── Period filter ── */}
+        <div className="mt-5 flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-gray-400" />
+            <span className="text-sm font-medium text-gray-600">Periodo:</span>
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={allPeriod}
+              onChange={e => setAllPeriod(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            <span className="text-sm text-gray-700">Todo o periodo</span>
+          </label>
+          {!allPeriod && (
+            <div className="flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-gray-400" />
+              <input
+                type="date"
+                value={dateRange.from}
+                onChange={e => setDateRange(p => ({ ...p, from: e.target.value }))}
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-gray-400 text-sm">ate</span>
+              <input
+                type="date"
+                value={dateRange.to}
+                onChange={e => setDateRange(p => ({ ...p, to: e.target.value }))}
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          )}
+          {summary && (
+            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">
+              {summary.period_label}
+            </span>
+          )}
+        </div>
+
+        {/* ── SQL panel ── */}
         {showSqlPanel && (
           <div className="mt-4 border-t border-gray-100 pt-4">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                Queries SQL de Auditoria (somente leitura)
+                Queries SQL — 6 Dimensoes (somente leitura)
               </p>
               <button
                 onClick={exportSql}
                 className="text-xs text-blue-600 hover:underline flex items-center gap-1"
               >
-                <Download className="h-3 w-3" /> Baixar .sql
+                <Download className="h-3 w-3" /> .sql
               </button>
             </div>
-            <pre className="bg-gray-900 text-green-300 text-xs p-4 rounded-lg overflow-auto max-h-72 whitespace-pre">
+            <pre className="bg-gray-900 text-green-300 text-xs p-4 rounded-lg overflow-auto max-h-80 whitespace-pre">
               {SQL_AUDIT_QUERIES}
             </pre>
           </div>
@@ -878,10 +1344,16 @@ export default function PaymentAudit() {
         <div className="bg-white rounded-xl border-2 border-dashed border-gray-200 p-16 text-center">
           <ShieldCheck className="h-16 w-16 text-gray-300 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-gray-500 mb-2">Pronto para auditar</h3>
-          <p className="text-sm text-gray-400 max-w-md mx-auto">
-            Clique em "Executar Auditoria" para verificar a integridade de todos os registros financeiros
-            — receitas, fluxo de caixa, obras e parcelas de orcamento.
+          <p className="text-sm text-gray-400 max-w-lg mx-auto mb-1">
+            Selecione o periodo e clique em "Executar Auditoria" para verificar as 6 dimensoes de integridade.
           </p>
+          <div className="flex flex-wrap justify-center gap-2 mt-4">
+            {Object.entries(CATEGORY_LABELS).map(([k, v]) => (
+              <span key={k} className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full">
+                {v}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
@@ -889,22 +1361,20 @@ export default function PaymentAudit() {
       {loading && (
         <div className="bg-white rounded-xl border border-gray-200 p-16 text-center">
           <RefreshCw className="h-12 w-12 text-blue-500 mx-auto mb-4 animate-spin" />
-          <p className="text-gray-600 font-medium">Analisando registros financeiros...</p>
-          <p className="text-sm text-gray-400 mt-1">
-            Executando {7} verificacoes em paralelo — isso pode levar alguns segundos
-          </p>
+          <p className="text-gray-600 font-medium">Executando auditoria completa...</p>
+          <p className="text-sm text-gray-400 mt-1">9 consultas em paralelo — aguarde alguns segundos</p>
         </div>
       )}
 
       {summary && !loading && (
         <>
-          {/* ── Scope cards ──────────────────────────────────────────────────── */}
+          {/* ── Scope cards ────────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[
-              { icon: Database, label: 'Receitas', value: summary.total_revenues, sub: 'registros em customer_revenue', color: 'text-blue-600' },
-              { icon: TrendingUp, label: 'Fluxo de Caixa', value: summary.total_cashflows_linked, sub: 'entradas vinculadas', color: 'text-green-600' },
-              { icon: Users, label: 'Clientes', value: summary.total_customers, sub: 'cadastrados', color: 'text-gray-600' },
-              { icon: Database, label: 'Obras', value: summary.total_works, sub: 'cadastradas', color: 'text-gray-600' },
+              { icon: Database, label: 'Receitas', value: summary.total_revenues, sub: 'no periodo auditado', color: 'text-blue-600' },
+              { icon: TrendingUp, label: 'FC Vinculados', value: summary.total_cashflows_linked, sub: 'entradas com revenue_id', color: 'text-green-600' },
+              { icon: Users, label: 'Clientes', value: summary.total_customers, sub: 'cadastrados', color: 'text-gray-500' },
+              { icon: Database, label: 'Obras', value: summary.total_works, sub: 'cadastradas', color: 'text-gray-500' },
             ].map(({ icon: Icon, label, value, sub, color }) => (
               <div key={label} className="bg-white rounded-xl border border-gray-200 p-5">
                 <div className="flex items-center gap-2 mb-1">
@@ -917,7 +1387,7 @@ export default function PaymentAudit() {
             ))}
           </div>
 
-          {/* ── Status cards ─────────────────────────────────────────────────── */}
+          {/* ── Status cards ───────────────────────────────────────────────── */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className={`rounded-xl border-2 p-5 ${openIssues.length === 0 ? 'bg-green-50 border-green-200' : 'bg-orange-50 border-orange-200'}`}>
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Problemas Pendentes</p>
@@ -929,41 +1399,82 @@ export default function PaymentAudit() {
               )}
             </div>
             <div className={`rounded-xl border-2 p-5 ${criticalCount === 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Criticos</p>
-              <div className="flex items-baseline gap-2">
-                <p className={`text-4xl font-bold ${criticalCount === 0 ? 'text-green-700' : 'text-red-700'}`}>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Por Severidade</p>
+              <div className="flex items-baseline gap-3">
+                <span className={`text-3xl font-bold ${criticalCount > 0 ? 'text-red-700' : 'text-green-700'}`}>
                   {criticalCount}
-                </p>
+                </span>
+                <span className="text-sm text-gray-500">criticos</span>
                 {warningCount > 0 && (
-                  <p className="text-sm text-yellow-600">+ {warningCount} atencao</p>
+                  <>
+                    <span className="text-2xl font-bold text-yellow-600">{warningCount}</span>
+                    <span className="text-sm text-gray-500">atencao</span>
+                  </>
                 )}
               </div>
             </div>
             <div className={`rounded-xl border-2 p-5 ${summary.total_at_risk === 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Valor em Risco</p>
-              <p className={`text-2xl font-bold mt-1 ${summary.total_at_risk === 0 ? 'text-green-700' : 'text-red-700'}`}>
+              <p className={`text-2xl font-bold ${summary.total_at_risk === 0 ? 'text-green-700' : 'text-red-700'}`}>
                 {fmt(summary.total_at_risk)}
               </p>
               <p className="text-xs text-gray-400 mt-0.5">soma dos registros com problemas</p>
             </div>
           </div>
 
-          {/* ── All clear ────────────────────────────────────────────────────── */}
+          {/* ── Category breakdown ─────────────────────────────────────────── */}
+          {Object.keys(summary.issues_by_category).length > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+                Distribuicao por Dimensao
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                {Object.entries(CATEGORY_LABELS).map(([k, label]) => {
+                  const count = summary.issues_by_category[k] || 0;
+                  const desc = CATEGORY_DESCRIPTIONS[k as IssueCategory];
+                  return (
+                    <button
+                      key={k}
+                      onClick={() => setActiveFilter(count > 0 ? k : 'all')}
+                      title={desc}
+                      className={`text-left p-3 rounded-lg border transition-all ${
+                        count > 0
+                          ? activeFilter === k
+                            ? 'border-blue-400 bg-blue-50'
+                            : 'border-gray-200 hover:border-blue-300 hover:bg-blue-50 cursor-pointer'
+                          : 'border-gray-100 bg-gray-50 cursor-default'
+                      }`}
+                    >
+                      <p className={`text-2xl font-bold ${count > 0 ? 'text-gray-900' : 'text-gray-300'}`}>
+                        {count}
+                      </p>
+                      <p className={`text-xs mt-0.5 font-medium ${count > 0 ? 'text-gray-600' : 'text-gray-300'}`}>
+                        {label}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── All clear ──────────────────────────────────────────────────── */}
           {openIssues.length === 0 && (
             <div className="bg-green-50 border-2 border-green-200 rounded-xl p-10 text-center">
               <CheckCircle2 className="h-14 w-14 text-green-500 mx-auto mb-3" />
               <h3 className="text-xl font-bold text-green-800 mb-1">
-                Todos os registros financeiros estao integros!
+                Todos os registros estao integros!
               </h3>
               <p className="text-green-700 text-sm max-w-md mx-auto">
-                Nenhuma inconsistencia, duplicacao ou pagamento orfao foi detectado em{' '}
-                {summary.total_revenues} receitas auditadas.
+                Nenhuma das 6 dimensoes de auditoria detectou problemas em {summary.total_revenues} receitas.
               </p>
-              <p className="text-green-500 text-xs mt-3">Auditoria executada em {summary.ran_at}</p>
+              <p className="text-green-500 text-xs mt-3">
+                {summary.ran_at} — {summary.period_label}
+              </p>
             </div>
           )}
 
-          {/* ── Auto-fix banner ──────────────────────────────────────────────── */}
+          {/* ── Auto-fix banner ─────────────────────────────────────────────── */}
           {autoFixableCount > 0 && (
             <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 flex items-center gap-3">
               <Wrench className="h-5 w-5 text-blue-600 flex-shrink-0" />
@@ -974,78 +1485,75 @@ export default function PaymentAudit() {
             </div>
           )}
 
-          {/* ── Filter tabs ──────────────────────────────────────────────────── */}
+          {/* ── Filter tabs ─────────────────────────────────────────────────── */}
           {openIssues.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
-              {[
-                { key: 'all', label: `Todos (${openIssues.length})` },
-                ...Object.entries(summary.issues_by_category)
-                  .filter(([, v]) => v > 0)
-                  .sort((a, b) => b[1] - a[1])
-                  .map(([k, v]) => ({ key: k, label: `${CATEGORY_LABELS[k as IssueCategory] ?? k} (${v})` })),
-              ].map(({ key, label }) => (
-                <button
-                  key={key}
-                  onClick={() => setActiveFilter(key)}
-                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                    activeFilter === key
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+              <button
+                onClick={() => setActiveFilter('all')}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                  activeFilter === 'all'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                Todos ({openIssues.length})
+              </button>
+              {Object.entries(summary.issues_by_category)
+                .filter(([, v]) => v > 0)
+                .sort((a, b) => b[1] - a[1])
+                .map(([k, v]) => (
+                  <button
+                    key={k}
+                    onClick={() => setActiveFilter(k)}
+                    className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                      activeFilter === k
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {CATEGORY_LABELS[k as IssueCategory] ?? k} ({v})
+                  </button>
+                ))}
             </div>
           )}
 
-          {/* ── Issues list ──────────────────────────────────────────────────── */}
+          {/* ── Issues list ─────────────────────────────────────────────────── */}
           {filteredIssues.length > 0 && (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {filteredIssues.map(issue => (
                 <div
                   key={issue.id}
                   className={`rounded-xl border-2 overflow-hidden ${SEVERITY_BORDER[issue.severity]}`}
                 >
-                  {/* Issue header */}
                   <div
                     className="flex items-center justify-between px-4 py-3 cursor-pointer select-none"
                     onClick={() => toggleExpand(issue.id)}
                   >
                     <div className="flex items-center gap-3 flex-1 min-w-0">
-                      {issue.severity === 'critical' ? (
-                        <XCircle className={`h-5 w-5 flex-shrink-0 ${SEVERITY_ICON_CLS[issue.severity]}`} />
-                      ) : issue.severity === 'warning' ? (
-                        <AlertTriangle className={`h-5 w-5 flex-shrink-0 ${SEVERITY_ICON_CLS[issue.severity]}`} />
-                      ) : (
-                        <Info className={`h-5 w-5 flex-shrink-0 ${SEVERITY_ICON_CLS[issue.severity]}`} />
-                      )}
+                      <SeverityIcon severity={issue.severity} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold text-sm text-gray-900">{issue.title}</span>
                           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SEVERITY_BADGE[issue.severity]}`}>
                             {SEVERITY_LABEL[issue.severity]}
                           </span>
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-white bg-opacity-70 text-gray-600 border border-gray-200">
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-white bg-opacity-60 text-gray-600 border border-gray-200">
+                            <Tag className="h-2.5 w-2.5 inline mr-1" />
                             {CATEGORY_LABELS[issue.category]}
                           </span>
                         </div>
-                        <div className="flex items-center gap-4 mt-0.5 text-xs text-gray-600">
-                          <span className="font-bold">{fmt(issue.amount)}</span>
+                        <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-600 flex-wrap">
+                          <span className="font-bold"><CreditCard className="h-3 w-3 inline mr-0.5" />{fmt(issue.amount)}</span>
                           {issue.customer_name && <span>{issue.customer_name}</span>}
-                          {issue.work_name && (
-                            <span className="italic">{issue.work_name}</span>
-                          )}
-                          {issue.payment_date && (
-                            <span>{fmtDate(issue.payment_date)}</span>
-                          )}
+                          {issue.work_name && <span className="italic">{issue.work_name}</span>}
+                          {issue.payment_date && <span>{fmtDate(issue.payment_date)}</span>}
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 ml-3 flex-shrink-0">
                       {issue.auto_fixable && (
                         <button
-                          onClick={(e) => { e.stopPropagation(); applyFix(issue); }}
+                          onClick={e => { e.stopPropagation(); applyFix(issue); }}
                           disabled={fixing === issue.id}
                           className="flex items-center gap-1 px-3 py-1 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
                         >
@@ -1061,26 +1569,31 @@ export default function PaymentAudit() {
                     </div>
                   </div>
 
-                  {/* Expanded detail */}
                   {expanded.has(issue.id) && (
                     <div className="border-t border-gray-200 px-4 py-4 space-y-4 bg-white bg-opacity-70">
                       <div>
-                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Descricao do Problema</p>
+                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Descricao</p>
                         <p className="text-sm text-gray-700">{issue.detail}</p>
                       </div>
 
-                      {(issue.revenue_id || issue.cashflow_id) && (
-                        <div className="flex flex-wrap gap-4 text-xs text-gray-500">
+                      {(issue.revenue_id || issue.cashflow_id || issue.work_item_id) && (
+                        <div className="flex flex-wrap gap-4 text-xs">
                           {issue.revenue_id && (
                             <div>
-                              <span className="font-semibold text-gray-400">Revenue ID</span>
-                              <p className="font-mono">{issue.revenue_id}</p>
+                              <p className="text-gray-400 font-semibold">Revenue ID</p>
+                              <p className="font-mono text-gray-600">{issue.revenue_id}</p>
                             </div>
                           )}
                           {issue.cashflow_id && (
                             <div>
-                              <span className="font-semibold text-gray-400">CashFlow ID</span>
-                              <p className="font-mono">{issue.cashflow_id}</p>
+                              <p className="text-gray-400 font-semibold">CashFlow ID</p>
+                              <p className="font-mono text-gray-600">{issue.cashflow_id}</p>
+                            </div>
+                          )}
+                          {issue.work_item_id && (
+                            <div>
+                              <p className="text-gray-400 font-semibold">WorkItem ID</p>
+                              <p className="font-mono text-gray-600">{issue.work_item_id}</p>
                             </div>
                           )}
                         </div>
@@ -1095,7 +1608,15 @@ export default function PaymentAudit() {
 
                       {issue.sql_hint && (
                         <div>
-                          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">SQL</p>
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">SQL</p>
+                            <button
+                              onClick={() => copyToClipboard(issue.sql_hint!)}
+                              className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                            >
+                              <Copy className="h-3 w-3" /> Copiar
+                            </button>
+                          </div>
                           <pre className="bg-gray-900 text-green-400 text-xs p-3 rounded-lg overflow-x-auto whitespace-pre">
                             {issue.sql_hint}
                           </pre>
@@ -1105,7 +1626,7 @@ export default function PaymentAudit() {
                       {!issue.auto_fixable && (
                         <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
                           <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
-                          <span>Esta correcao requer intervencao manual — nao pode ser aplicada automaticamente pelo sistema.</span>
+                          <span>Intervencao manual necessaria — nao pode ser aplicada automaticamente.</span>
                         </div>
                       )}
 
@@ -1126,39 +1647,30 @@ export default function PaymentAudit() {
             </div>
           )}
 
-          {/* ── Post-audit checklist ─────────────────────────────────────────── */}
+          {/* ── Checklist ──────────────────────────────────────────────────── */}
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-green-600" />
-              Checklist de Validacao Pos-Auditoria
+              Checklist de Validacao — 6 Dimensoes
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-700">
-              {[
-                ['Todos os pagamentos em customer_revenue possuem entrada correspondente em cash_flow', openIssues.filter(i => i.category === 'missing_cashflow').length === 0],
-                ['Os valores de payment_amount coincidem com amount no cash_flow', openIssues.filter(i => i.id.startsWith('amount-mismatch')).length === 0],
-                ['O customer_id e consistente entre as duas tabelas', openIssues.filter(i => i.id.startsWith('customer-mismatch')).length === 0],
-                ['Nenhum pagamento esta vinculado a uma obra inexistente', openIssues.filter(i => i.id.startsWith('orphan-work')).length === 0],
-                ['O cliente do pagamento coincide com o cliente da obra', openIssues.filter(i => i.id.startsWith('work-customer-mismatch')).length === 0],
-                ['Nao ha entradas duplicadas/legadas no fluxo de caixa', openIssues.filter(i => i.category === 'duplicate').length === 0],
-                ['Nenhum pagamento esta vinculado a um cliente inexistente', openIssues.filter(i => i.id.startsWith('orphan-customer')).length === 0],
-                ['Parcelas pagas tem receitas correspondentes registradas', openIssues.filter(i => i.category === 'installment_mismatch').length === 0],
-              ].map(([label, ok], i) => (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+              {checklist.map(([label, ok], i) => (
                 <div key={i} className="flex items-start gap-2">
                   {ok
                     ? <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5 text-green-500" />
                     : <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5 text-red-400" />}
-                  <span className={ok as boolean ? 'text-gray-600' : 'text-red-700 font-medium'}>{label as string}</span>
+                  <span className={ok ? 'text-gray-600' : 'text-red-700 font-medium'}>{label}</span>
                 </div>
               ))}
             </div>
           </div>
 
           <p className="text-xs text-gray-400 text-center">
-            Auditoria executada em {summary.ran_at} &mdash;{' '}
+            {summary.ran_at} &mdash; {summary.period_label} &bull;{' '}
             {summary.total_revenues} receitas &bull;{' '}
-            {summary.total_cashflows_linked} entradas de caixa &bull;{' '}
+            {summary.total_cashflows_linked} FC &bull;{' '}
             {summary.total_works} obras &bull;{' '}
-            {summary.total_customers} clientes analisados
+            {summary.total_customers} clientes
           </p>
         </>
       )}
