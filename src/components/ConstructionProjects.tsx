@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, Package, AlertCircle, FileText, RefreshCw, CreditCard, CheckCircle, Clock, Banknote } from 'lucide-react';
+import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, Package, AlertCircle, FileText, RefreshCw, CreditCard, CheckCircle, Clock, Banknote, Link } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useHorizontalKeyboardScroll } from '../hooks/useHorizontalKeyboardScroll';
 import ConstructionWorkStatement from './ConstructionWorkStatement';
@@ -125,6 +125,11 @@ export default function ConstructionProjects() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [editingPayment, setEditingPayment] = useState<WorkPaymentRecord | null>(null);
   const [paymentWorkId, setPaymentWorkId] = useState<string>('');
+  const [showLinkQuoteModal, setShowLinkQuoteModal] = useState(false);
+  const [linkQuoteWorkId, setLinkQuoteWorkId] = useState<string>('');
+  const [availableQuotes, setAvailableQuotes] = useState<any[]>([]);
+  const [selectedLinkQuoteId, setSelectedLinkQuoteId] = useState<string>('');
+  const [linkingQuote, setLinkingQuote] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
 
   useHorizontalKeyboardScroll(tableRef);
@@ -657,6 +662,129 @@ export default function ConstructionProjects() {
     alert('Item excluido com sucesso!');
   };
 
+  const handleOpenLinkQuoteModal = async (workId: string, customerId: string) => {
+    setLinkQuoteWorkId(workId);
+    setSelectedLinkQuoteId('');
+
+    const { data, error } = await supabase
+      .from('quotes')
+      .select(`
+        id,
+        created_at,
+        total_value,
+        quote_items (id)
+      `)
+      .eq('customer_id', customerId)
+      .eq('status', 'approved')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error loading quotes:', error);
+      alert('Erro ao buscar orçamentos aprovados');
+      return;
+    }
+
+    const alreadyLinked = await supabase
+      .from('construction_work_items')
+      .select('quote_id')
+      .eq('work_id', workId)
+      .not('quote_id', 'is', null);
+
+    const linkedQuoteIds = new Set((alreadyLinked.data || []).map(r => r.quote_id));
+    const unlinked = (data || []).filter(q => !linkedQuoteIds.has(q.id));
+    setAvailableQuotes(unlinked);
+    setShowLinkQuoteModal(true);
+  };
+
+  const handleLinkQuoteToWork = async () => {
+    if (!selectedLinkQuoteId || !linkQuoteWorkId) return;
+    setLinkingQuote(true);
+    try {
+      const { data: quoteItems, error: itemsError } = await supabase
+        .from('quote_items')
+        .select(`
+          *,
+          products (id, name, unit),
+          materials (id, name, unit),
+          compositions (id, name)
+        `)
+        .eq('quote_id', selectedLinkQuoteId);
+
+      if (itemsError) throw itemsError;
+
+      const VALID_WORK_ITEM_TYPES = ['product', 'material', 'composition', 'service'];
+      const itemsToInsert = (quoteItems || [])
+        .filter(item => VALID_WORK_ITEM_TYPES.includes(item.item_type))
+        .map(item => {
+          let itemName = 'Item sem nome';
+          let itemUnit = '';
+          let productId = null;
+          let materialId = null;
+          let compositionId = null;
+
+          const product = Array.isArray(item.products) ? item.products[0] : item.products;
+          const material = Array.isArray(item.materials) ? item.materials[0] : item.materials;
+          const composition = Array.isArray(item.compositions) ? item.compositions[0] : item.compositions;
+
+          if (item.item_type === 'product' && product) {
+            itemName = product.name || 'Produto sem nome';
+            itemUnit = product.unit || '';
+            productId = item.product_id;
+          } else if (item.item_type === 'material' && material) {
+            itemName = material.name || 'Material sem nome';
+            itemUnit = material.unit || '';
+            materialId = item.material_id;
+          } else if (item.item_type === 'composition' && composition) {
+            itemName = composition.name || 'Composição';
+            itemUnit = 'un';
+            compositionId = item.composition_id;
+          } else if (item.item_type === 'service') {
+            itemName = item.item_name || item.notes || 'Serviço';
+            itemUnit = 'un';
+            compositionId = item.composition_id;
+          }
+
+          return {
+            work_id: linkQuoteWorkId,
+            quote_id: selectedLinkQuoteId,
+            quote_item_id: item.id,
+            item_type: item.item_type,
+            item_name: itemName,
+            quantity: Number(item.quantity),
+            unit_price: Number(item.proposed_price),
+            total_price: Number(item.quantity) * Number(item.proposed_price),
+            unit: itemUnit || null,
+            product_id: productId,
+            material_id: materialId,
+            composition_id: compositionId,
+            notes: item.notes || null,
+          };
+        });
+
+      if (itemsToInsert.length === 0) {
+        alert('Este orçamento não possui itens válidos para vincular à obra.');
+        setLinkingQuote(false);
+        return;
+      }
+
+      const { error: insertError } = await supabase
+        .from('construction_work_items')
+        .insert(itemsToInsert);
+
+      if (insertError) throw insertError;
+
+      alert(`${itemsToInsert.length} item(s) vinculado(s) à obra com sucesso!`);
+      setShowLinkQuoteModal(false);
+      delete workItems[linkQuoteWorkId];
+      await loadWorkItems(linkQuoteWorkId);
+    } catch (err: any) {
+      console.error('Erro ao vincular orçamento:', err);
+      alert('Erro ao vincular orçamento: ' + (err.message || 'Erro desconhecido'));
+    } finally {
+      setLinkingQuote(false);
+    }
+  };
+
   const resetForm = () => {
     setFormData({
       customer_id: '',
@@ -1103,16 +1231,26 @@ export default function ConstructionProjects() {
                                   </span>
                                 )}
                               </div>
-                              <button
-                                onClick={() => {
-                                  setSelectedWorkId(work.id);
-                                  setShowItemModal(true);
-                                }}
-                                className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
-                              >
-                                <Plus className="h-4 w-4" />
-                                Adicionar Item
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleOpenLinkQuoteModal(work.id, work.customer_id)}
+                                  className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors"
+                                  title="Vincular orçamento aprovado a esta obra"
+                                >
+                                  <Link className="h-4 w-4" />
+                                  Vincular Orçamento
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedWorkId(work.id);
+                                    setShowItemModal(true);
+                                  }}
+                                  className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+                                >
+                                  <Plus className="h-4 w-4" />
+                                  Adicionar Item
+                                </button>
+                              </div>
                             </div>
 
                             {!workItems[work.id] ? (
@@ -1692,6 +1830,94 @@ export default function ConstructionProjects() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Vincular Orçamento Aprovado à Obra */}
+      {showLinkQuoteModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full">
+            <div className="flex items-center justify-between p-5 border-b">
+              <div className="flex items-center gap-2">
+                <Link className="h-5 w-5 text-green-600" />
+                <h3 className="text-lg font-bold text-gray-800">Vincular Orçamento à Obra</h3>
+              </div>
+              <button
+                onClick={() => setShowLinkQuoteModal(false)}
+                className="p-1 rounded hover:bg-gray-100 text-gray-500"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {availableQuotes.length === 0 ? (
+                <div className="text-center py-8">
+                  <Package className="h-12 w-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500 font-medium">Nenhum orçamento aprovado disponível</p>
+                  <p className="text-sm text-gray-400 mt-1">
+                    Todos os orçamentos aprovados deste cliente já foram vinculados a esta obra.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-600">
+                    Selecione um orçamento aprovado para vincular seus itens a esta obra.
+                    Orçamentos já vinculados a esta obra não aparecem na lista.
+                  </p>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Orçamento Aprovado
+                    </label>
+                    <select
+                      value={selectedLinkQuoteId}
+                      onChange={(e) => setSelectedLinkQuoteId(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                    >
+                      <option value="">Selecione um orçamento...</option>
+                      {availableQuotes.map(q => (
+                        <option key={q.id} value={q.id}>
+                          {new Date(q.created_at).toLocaleDateString('pt-BR')} —
+                          R$ {Number(q.total_value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} —
+                          {(q.quote_items?.length || 0)} item(s)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                    <p className="text-sm text-amber-800">
+                      Os itens do orçamento selecionado serão adicionados aos Itens da Obra.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 px-5 pb-5">
+              <button
+                type="button"
+                onClick={() => setShowLinkQuoteModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm"
+              >
+                Cancelar
+              </button>
+              {availableQuotes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleLinkQuoteToWork}
+                  disabled={!selectedLinkQuoteId || linkingQuote}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {linkingQuote ? (
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Link className="h-4 w-4" />
+                  )}
+                  {linkingQuote ? 'Vinculando...' : 'Vincular à Obra'}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

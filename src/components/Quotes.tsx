@@ -272,7 +272,8 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
             precos_congelados,
             snapshot_valores,
             data_congelamento,
-            customers (name, person_type)
+            customers (name, person_type),
+            quote_items (id)
           `)
           .order('created_at', { ascending: false })
           .limit(200),
@@ -283,7 +284,10 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
       ]);
 
       if (quotesRes.data) {
-        const quotesBasic = quotesRes.data.map(quote => ({ ...quote, quote_items: [] }));
+        const quotesBasic = quotesRes.data.map(quote => ({
+          ...quote,
+          quote_items: (quote as any).quote_items || [],
+        }));
         setQuotes(quotesBasic);
       }
       if (customersRes.data) setCustomers(customersRes.data);
@@ -732,7 +736,7 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
     try {
       const { data: works, error } = await supabase
         .from('construction_works')
-        .select('id, customer_id, work_name, status, address, start_date')
+        .select('id, customer_id, work_name, status, address, start_date, construction_type')
         .eq('customer_id', customerId)
         .in('status', ['em_andamento', 'pausada'])
         .limit(50);
@@ -983,60 +987,36 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
   const checkStockAndShowDialog = async (quoteId: string) => {
     try {
       console.log('Iniciando verificação de estoque para orçamento:', quoteId);
-      const quote = quotes.find(q => q.id === quoteId);
-      if (!quote) {
-        console.log('Orçamento não encontrado no estado local, buscando do banco...');
-        const { data, error } = await supabase
-          .from('quotes')
-          .select(`
-            *,
-            customers (name, person_type),
-            quote_items (*)
-          `)
-          .eq('id', quoteId)
-          .single();
 
-        if (error) throw error;
-        if (!data) {
-          throw new Error('Orçamento não encontrado');
-        }
+      const { data, error } = await supabase
+        .from('quotes')
+        .select(`
+          *,
+          customers (name, person_type),
+          quote_items (*)
+        `)
+        .eq('id', quoteId)
+        .single();
 
-        console.log('Orçamento carregado do banco:', data);
+      if (error) throw error;
+      if (!data) throw new Error('Orçamento não encontrado');
 
-        if (!data.quote_items || data.quote_items.length === 0) {
-          console.log('Orçamento sem itens, aprovando diretamente');
-          await updateQuoteStatus(quoteId, 'approved');
-          return;
-        }
+      console.log('Orçamento carregado do banco:', data);
 
-        const productItems = data.quote_items.filter((item: any) => item.item_type === 'product' && item.product_id);
-        if (productItems.length === 0) {
-          console.log('Nenhum produto no orçamento, aprovando diretamente');
-          await updateQuoteStatus(quoteId, 'approved');
-          return;
-        }
-
-        await processStockCheck(quoteId, data, productItems);
-        return;
-      }
-
-      if (!quote.quote_items || quote.quote_items.length === 0) {
+      if (!data.quote_items || data.quote_items.length === 0) {
         console.log('Orçamento sem itens, aprovando diretamente');
         await updateQuoteStatus(quoteId, 'approved');
         return;
       }
 
-      console.log('Orçamento encontrado:', quote);
-      const productItems = quote.quote_items.filter(item => item.item_type === 'product' && item.product_id);
-      console.log('Itens de produto no orçamento:', productItems);
-
+      const productItems = data.quote_items.filter((item: any) => item.item_type === 'product' && item.product_id);
       if (productItems.length === 0) {
         console.log('Nenhum produto no orçamento, aprovando diretamente');
         await updateQuoteStatus(quoteId, 'approved');
         return;
       }
 
-      await processStockCheck(quoteId, quote, productItems);
+      await processStockCheck(quoteId, data, productItems);
     } catch (error: any) {
       console.error('Erro ao verificar estoque:', error);
       alert(`Erro ao verificar estoque dos produtos: ${error?.message || 'Erro desconhecido'}`);
