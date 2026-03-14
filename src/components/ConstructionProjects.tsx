@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, Package, AlertCircle, FileText, RefreshCw } from 'lucide-react';
+import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, Package, AlertCircle, FileText, RefreshCw, CreditCard, CheckCircle, Clock, Banknote } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useHorizontalKeyboardScroll } from '../hooks/useHorizontalKeyboardScroll';
 import ConstructionWorkStatement from './ConstructionWorkStatement';
@@ -53,6 +53,21 @@ interface WorkItem {
   unit?: string;
 }
 
+interface WorkPaymentRecord {
+  id: string;
+  origin_id: string;
+  total_amount: number;
+  paid_amount: number;
+  balance: number;
+  payment_date: string;
+  payment_amount: number;
+  payment_method: string;
+  notes: string;
+  receipt_number: string;
+  origin_description: string;
+  created_at: string;
+}
+
 interface Product {
   id: string;
   name: string;
@@ -79,6 +94,16 @@ interface WorkPayments {
   balance: number;
 }
 
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  dinheiro: 'Dinheiro',
+  pix: 'PIX',
+  cartao_credito: 'Cartao de Credito',
+  cartao_debito: 'Cartao de Debito',
+  transferencia: 'Transferencia',
+  boleto: 'Boleto',
+  cheque: 'Cheque',
+};
+
 export default function ConstructionProjects() {
   const [works, setWorks] = useState<Work[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -90,11 +115,15 @@ export default function ConstructionProjects() {
   const [expandedWorks, setExpandedWorks] = useState<Set<string>>(new Set());
   const [workItems, setWorkItems] = useState<{ [key: string]: WorkItem[] }>({});
   const [workPayments, setWorkPayments] = useState<{ [key: string]: WorkPayments }>({});
+  const [workPaymentRecords, setWorkPaymentRecords] = useState<{ [key: string]: WorkPaymentRecord[] }>({});
   const [showItemModal, setShowItemModal] = useState(false);
   const [selectedWorkId, setSelectedWorkId] = useState<string>('');
   const [showStatementModal, setShowStatementModal] = useState(false);
   const [selectedWorkForStatement, setSelectedWorkForStatement] = useState<Work | null>(null);
   const [refreshingPayments, setRefreshingPayments] = useState<{ [key: string]: boolean }>({});
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [editingPayment, setEditingPayment] = useState<WorkPaymentRecord | null>(null);
+  const [paymentWorkId, setPaymentWorkId] = useState<string>('');
   const tableRef = useRef<HTMLDivElement>(null);
 
   useHorizontalKeyboardScroll(tableRef);
@@ -128,6 +157,15 @@ export default function ConstructionProjects() {
     unit_price: 0,
     unit: '',
     notes: ''
+  });
+
+  const [paymentForm, setPaymentForm] = useState({
+    payment_date: new Date().toISOString().split('T')[0],
+    payment_amount: 0,
+    payment_method: 'pix',
+    notes: '',
+    receipt_number: '',
+    origin_description: ''
   });
 
   useEffect(() => {
@@ -225,13 +263,32 @@ export default function ConstructionProjects() {
     }));
   };
 
+  const loadWorkPaymentRecords = async (workId: string) => {
+    const { data, error } = await supabase
+      .from('customer_revenue')
+      .select('id, origin_id, total_amount, paid_amount, balance, payment_date, payment_amount, payment_method, notes, receipt_number, origin_description, created_at')
+      .eq('origin_type', 'construction_work')
+      .eq('origin_id', workId)
+      .order('payment_date', { ascending: false });
+
+    if (error) {
+      console.error('Error loading payment records:', error);
+      return;
+    }
+
+    setWorkPaymentRecords(prev => ({
+      ...prev,
+      [workId]: data || []
+    }));
+  };
+
   const toggleWorkExpansion = async (workId: string) => {
     const newExpanded = new Set(expandedWorks);
     if (newExpanded.has(workId)) {
       newExpanded.delete(workId);
     } else {
       newExpanded.add(workId);
-      await Promise.all([loadWorkItems(workId), loadWorkPayments(workId)]);
+      await Promise.all([loadWorkItems(workId), loadWorkPayments(workId), loadWorkPaymentRecords(workId)]);
     }
     setExpandedWorks(newExpanded);
   };
@@ -268,15 +325,128 @@ export default function ConstructionProjects() {
 
   const handleRefreshPayments = async (workId: string) => {
     setRefreshingPayments(prev => ({ ...prev, [workId]: true }));
-    await loadWorkPayments(workId);
+    await Promise.all([loadWorkPayments(workId), loadWorkPaymentRecords(workId)]);
     setRefreshingPayments(prev => ({ ...prev, [workId]: false }));
+  };
+
+  const handleOpenPaymentModal = (workId: string, payment?: WorkPaymentRecord) => {
+    setPaymentWorkId(workId);
+    if (payment) {
+      setEditingPayment(payment);
+      setPaymentForm({
+        payment_date: payment.payment_date,
+        payment_amount: payment.payment_amount,
+        payment_method: payment.payment_method,
+        notes: payment.notes || '',
+        receipt_number: payment.receipt_number || '',
+        origin_description: payment.origin_description || ''
+      });
+    } else {
+      setEditingPayment(null);
+      setPaymentForm({
+        payment_date: new Date().toISOString().split('T')[0],
+        payment_amount: 0,
+        payment_method: 'pix',
+        notes: '',
+        receipt_number: '',
+        origin_description: ''
+      });
+    }
+    setShowPaymentModal(true);
+  };
+
+  const handleSavePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const work = works.find(w => w.id === paymentWorkId);
+    if (!work) return;
+
+    if (!paymentForm.payment_amount || paymentForm.payment_amount <= 0) {
+      alert('Informe um valor de pagamento valido');
+      return;
+    }
+
+    if (editingPayment) {
+      const { error } = await supabase
+        .from('customer_revenue')
+        .update({
+          payment_date: paymentForm.payment_date,
+          payment_amount: paymentForm.payment_amount,
+          payment_method: paymentForm.payment_method,
+          notes: paymentForm.notes || null,
+          receipt_number: paymentForm.receipt_number || null,
+          origin_description: paymentForm.origin_description || null,
+        })
+        .eq('id', editingPayment.id);
+
+      if (error) {
+        console.error('Error updating payment:', error);
+        alert('Erro ao atualizar pagamento');
+        return;
+      }
+      alert('Pagamento atualizado com sucesso!');
+    } else {
+      const records = workPaymentRecords[paymentWorkId] || [];
+      const existingTotalPaid = records.reduce((sum, r) => sum + Number(r.payment_amount), 0);
+      const newTotalPaid = existingTotalPaid + Number(paymentForm.payment_amount);
+      const contractValue = Number(work.total_contract_value || 0);
+      const newBalance = contractValue - newTotalPaid;
+
+      const { error } = await supabase
+        .from('customer_revenue')
+        .insert([{
+          customer_id: work.customer_id,
+          origin_type: 'construction_work',
+          origin_id: paymentWorkId,
+          origin_description: paymentForm.origin_description || work.work_name,
+          total_amount: contractValue,
+          paid_amount: newTotalPaid,
+          balance: newBalance,
+          payment_date: paymentForm.payment_date,
+          payment_amount: paymentForm.payment_amount,
+          payment_method: paymentForm.payment_method,
+          notes: paymentForm.notes || null,
+          receipt_number: paymentForm.receipt_number || null,
+        }]);
+
+      if (error) {
+        console.error('Error registering payment:', error);
+        alert('Erro ao registrar pagamento');
+        return;
+      }
+      alert('Pagamento registrado com sucesso!');
+    }
+
+    setShowPaymentModal(false);
+    setEditingPayment(null);
+    setPaymentWorkId('');
+    delete workPaymentRecords[paymentWorkId];
+    await Promise.all([loadWorkPayments(paymentWorkId), loadWorkPaymentRecords(paymentWorkId)]);
+  };
+
+  const handleDeletePayment = async (paymentId: string, workId: string) => {
+    if (!confirm('Tem certeza que deseja excluir este pagamento? Esta acao nao pode ser desfeita.')) return;
+
+    const { error } = await supabase
+      .from('customer_revenue')
+      .delete()
+      .eq('id', paymentId);
+
+    if (error) {
+      console.error('Error deleting payment:', error);
+      alert('Erro ao excluir pagamento');
+      return;
+    }
+
+    alert('Pagamento excluido com sucesso!');
+    delete workPaymentRecords[workId];
+    await Promise.all([loadWorkPayments(workId), loadWorkPaymentRecords(workId)]);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!formData.customer_id || !formData.work_name) {
-      alert('Preencha os campos obrigatórios');
+      alert('Preencha os campos obrigatorios');
       return;
     }
 
@@ -286,7 +456,7 @@ export default function ConstructionProjects() {
     }
 
     if (formData.contract_type === 'administracao' && !formData.administration_percentage) {
-      alert('Informe o percentual de administração');
+      alert('Informe o percentual de administracao');
       return;
     }
 
@@ -334,7 +504,7 @@ export default function ConstructionProjects() {
     e.preventDefault();
 
     if (!selectedWorkId || !newItem.item_name || newItem.quantity <= 0) {
-      alert('Preencha todos os campos obrigatórios');
+      alert('Preencha todos os campos obrigatorios');
       return;
     }
 
@@ -427,7 +597,7 @@ export default function ConstructionProjects() {
       return;
     }
 
-    alert('Obra excluída com sucesso!');
+    alert('Obra excluida com sucesso!');
     loadWorks();
   };
 
@@ -449,7 +619,7 @@ export default function ConstructionProjects() {
 
     delete workItems[workId];
     await loadWorkItems(workId);
-    alert('Item excluído com sucesso!');
+    alert('Item excluido com sucesso!');
   };
 
   const resetForm = () => {
@@ -491,7 +661,7 @@ export default function ConstructionProjects() {
     switch (status) {
       case 'em_andamento': return 'Em Andamento';
       case 'pausada': return 'Pausada';
-      case 'concluida': return 'Concluída';
+      case 'concluida': return 'Concluida';
       case 'cancelada': return 'Cancelada';
       default: return status;
     }
@@ -502,6 +672,16 @@ export default function ConstructionProjects() {
     const totalValue = items.reduce((sum, item) => sum + (item.total_price || 0), 0);
     const totalItems = items.length;
     return { totalValue, totalItems };
+  };
+
+  const getItemTypeLabel = (type: string) => {
+    switch (type) {
+      case 'product': return 'Produto';
+      case 'material': return 'Insumo';
+      case 'composition': return 'Composicao';
+      case 'service': return 'Servico';
+      default: return type;
+    }
   };
 
   return (
@@ -555,11 +735,11 @@ export default function ConstructionProjects() {
             </div>
           </div>
         </div>
-        <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-4">
+        <div className="bg-gray-50 border-2 border-gray-200 rounded-lg p-4">
           <div className="flex items-center gap-3">
-            <DollarSign className="h-8 w-8 text-purple-600" />
+            <CheckCircle className="h-8 w-8 text-gray-600" />
             <div>
-              <p className="text-sm text-gray-600">Concluídas</p>
+              <p className="text-sm text-gray-600">Concluidas</p>
               <p className="text-2xl font-bold text-gray-900">
                 {works.filter(w => w.status === 'concluida').length}
               </p>
@@ -573,13 +753,13 @@ export default function ConstructionProjects() {
           <thead className="bg-gray-50">
             <tr>
               <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Detalhes</th>
-              <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Ações</th>
+              <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Acoes</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nome da Obra</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cliente</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tipo</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Contrato</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Início</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Inicio</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
@@ -627,7 +807,7 @@ export default function ConstructionProjects() {
                             setSelectedWorkForStatement(work);
                             setShowStatementModal(true);
                           }}
-                          className="p-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors"
+                          className="p-2 bg-teal-600 text-white rounded hover:bg-teal-700 transition-colors"
                           title="Ver Extrato"
                         >
                           <FileText className="h-4 w-4" />
@@ -669,7 +849,7 @@ export default function ConstructionProjects() {
                         </div>
                       ) : (
                         <div>
-                          <div className="font-medium">Administração</div>
+                          <div className="font-medium">Administracao</div>
                           <div className="text-xs">{work.administration_percentage}%</div>
                         </div>
                       )}
@@ -683,17 +863,20 @@ export default function ConstructionProjects() {
                       {work.start_date ? new Date(work.start_date).toLocaleDateString() : '-'}
                     </td>
                   </tr>
+
                   {expandedWorks.has(work.id) && (
                     <tr>
                       <td colSpan={8} className="px-6 py-4 bg-gray-50">
-                        <div className="space-y-4">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div className="space-y-6">
+
+                          {/* Info Cards Row */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="bg-white p-4 rounded-lg border">
                               <div className="flex items-center gap-2 mb-2">
                                 <MapPin className="h-5 w-5 text-gray-600" />
-                                <h4 className="font-semibold text-gray-700">Localização</h4>
+                                <h4 className="font-semibold text-gray-700">Localizacao</h4>
                               </div>
-                              <p className="text-sm text-gray-600">{work.address || 'Não informado'}</p>
+                              <p className="text-sm text-gray-600">{work.address || 'Nao informado'}</p>
                               <p className="text-sm text-gray-600">{work.city} - {work.state}</p>
                               {work.zip_code && <p className="text-sm text-gray-600">CEP: {work.zip_code}</p>}
                             </div>
@@ -703,11 +886,11 @@ export default function ConstructionProjects() {
                                 <h4 className="font-semibold text-gray-700">Prazos</h4>
                               </div>
                               <p className="text-sm text-gray-600">
-                                Previsão: {work.estimated_end_date ? new Date(work.estimated_end_date).toLocaleDateString() : 'Não definido'}
+                                Previsao: {work.estimated_end_date ? new Date(work.estimated_end_date).toLocaleDateString() : 'Nao definido'}
                               </p>
                               {work.actual_end_date && (
                                 <p className="text-sm text-gray-600">
-                                  Conclusão: {new Date(work.actual_end_date).toLocaleDateString()}
+                                  Conclusao: {new Date(work.actual_end_date).toLocaleDateString()}
                                 </p>
                               )}
                             </div>
@@ -725,12 +908,13 @@ export default function ConstructionProjects() {
                             </div>
                           </div>
 
+                          {/* Financial Summary — Pacote Fechado only */}
                           {work.contract_type === 'pacote_fechado' && workPayments[work.id] && (
                             <div className="bg-gradient-to-r from-green-50 to-blue-50 p-4 rounded-lg border-2 border-green-200">
                               <div className="flex items-center justify-between mb-3">
                                 <div className="flex items-center gap-2">
                                   <DollarSign className="h-6 w-6 text-green-600" />
-                                  <h4 className="font-bold text-gray-800 text-lg">Situação Financeira do Cliente</h4>
+                                  <h4 className="font-bold text-gray-800 text-lg">Situacao Financeira</h4>
                                 </div>
                                 <button
                                   onClick={() => handleRefreshPayments(work.id)}
@@ -750,7 +934,7 @@ export default function ConstructionProjects() {
                                   </p>
                                 </div>
                                 <div className="bg-white p-3 rounded-lg border border-green-200">
-                                  <p className="text-xs text-gray-600 mb-1">Total Pago</p>
+                                  <p className="text-xs text-gray-600 mb-1">Total Recebido</p>
                                   <p className="text-xl font-bold text-green-600">
                                     R$ {workPayments[work.id].total_paid.toFixed(2)}
                                   </p>
@@ -765,56 +949,178 @@ export default function ConstructionProjects() {
                             </div>
                           )}
 
-                          <div>
-                            <h4 className="font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                              <Package className="h-5 w-5" />
-                              Itens da Obra:
-                            </h4>
-                            {workItems[work.id] && workItems[work.id].length > 0 ? (
-                              <div className="space-y-2">
-                                {workItems[work.id].map((item) => (
-                                  <div key={item.id} className="bg-white p-4 rounded border border-gray-200">
-                                    <div className="flex justify-between items-start">
-                                      <div className="flex-1">
-                                        <div className="font-medium text-gray-900">{item.item_name}</div>
-                                        <div className="text-sm text-gray-600 mt-1">
-                                          Tipo: {item.item_type === 'product' ? 'Produto' : item.item_type === 'material' ? 'Insumo' : item.item_type === 'composition' ? 'Composição' : 'Serviço'}
-                                        </div>
-                                        <div className="text-sm text-gray-600">
-                                          Quantidade: {item.quantity} {item.unit ? `(${item.unit})` : ''} | Preço Unit.: R$ {item.unit_price.toFixed(2)}
-                                        </div>
-                                        {item.notes && (
-                                          <div className="text-sm text-gray-500 mt-1">Obs: {item.notes}</div>
-                                        )}
+                          {/* ── PAGAMENTOS RECEBIDOS ── */}
+                          <div className="bg-white rounded-lg border-2 border-green-200 overflow-hidden">
+                            <div className="flex items-center justify-between px-4 py-3 bg-green-50 border-b border-green-200">
+                              <div className="flex items-center gap-2">
+                                <CreditCard className="h-5 w-5 text-green-700" />
+                                <h4 className="font-semibold text-green-800">Pagamentos Recebidos</h4>
+                                {workPaymentRecords[work.id] && workPaymentRecords[work.id].length > 0 && (
+                                  <span className="bg-green-700 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+                                    {workPaymentRecords[work.id].length}
+                                  </span>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => handleOpenPaymentModal(work.id)}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors"
+                              >
+                                <Plus className="h-4 w-4" />
+                                Registrar Pagamento
+                              </button>
+                            </div>
+
+                            {!workPaymentRecords[work.id] ? (
+                              <div className="px-4 py-6 text-center">
+                                <Clock className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                                <p className="text-sm text-gray-500">Carregando pagamentos...</p>
+                              </div>
+                            ) : workPaymentRecords[work.id].length === 0 ? (
+                              <div className="px-4 py-6 text-center">
+                                <Banknote className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                                <p className="text-sm text-gray-500 italic">Nenhum pagamento registrado para esta obra</p>
+                              </div>
+                            ) : (
+                              <div className="divide-y divide-gray-100">
+                                {workPaymentRecords[work.id].map((payment) => (
+                                  <div key={payment.id} className="flex items-center justify-between px-4 py-3 hover:bg-green-50 transition-colors">
+                                    <div className="flex items-center gap-3 flex-1">
+                                      <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+                                        <CheckCircle className="h-5 w-5 text-green-600" />
                                       </div>
-                                      <div className="flex items-center gap-2 ml-4">
-                                        <div className="text-right">
-                                          <div className="font-semibold text-blue-600 text-lg">
-                                            R$ {item.total_price.toFixed(2)}
-                                          </div>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <span className="font-semibold text-green-700 text-lg">
+                                            R$ {Number(payment.payment_amount).toFixed(2)}
+                                          </span>
+                                          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                                            {PAYMENT_METHOD_LABELS[payment.payment_method] || payment.payment_method}
+                                          </span>
+                                          {payment.receipt_number && (
+                                            <span className="text-xs text-gray-400">#{payment.receipt_number}</span>
+                                          )}
                                         </div>
-                                        <button
-                                          onClick={() => handleDeleteItem(item.id, work.id)}
-                                          className="p-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
-                                          title="Excluir item"
-                                        >
-                                          <Trash2 className="h-4 w-4" />
-                                        </button>
+                                        <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
+                                          <span>{new Date(payment.payment_date).toLocaleDateString('pt-BR')}</span>
+                                          {payment.origin_description && (
+                                            <span className="truncate max-w-xs">{payment.origin_description}</span>
+                                          )}
+                                          {payment.notes && (
+                                            <span className="italic truncate max-w-xs text-gray-400">{payment.notes}</span>
+                                          )}
+                                        </div>
                                       </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                                      <button
+                                        onClick={() => handleOpenPaymentModal(work.id, payment)}
+                                        className="p-1.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+                                        title="Editar pagamento"
+                                      >
+                                        <Edit2 className="h-3.5 w-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeletePayment(payment.id, work.id)}
+                                        className="p-1.5 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                                        title="Excluir pagamento"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </button>
                                     </div>
                                   </div>
                                 ))}
+
+                                {/* Totals footer */}
+                                <div className="px-4 py-3 bg-green-50 flex items-center justify-between text-sm">
+                                  <span className="text-gray-600 font-medium">
+                                    {workPaymentRecords[work.id].length} pagamento{workPaymentRecords[work.id].length !== 1 ? 's' : ''}
+                                  </span>
+                                  <span className="font-bold text-green-700">
+                                    Total: R$ {workPaymentRecords[work.id].reduce((s, p) => s + Number(p.payment_amount), 0).toFixed(2)}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* ── ITENS DA OBRA (custos) ── */}
+                          <div className="bg-white rounded-lg border-2 border-blue-200 overflow-hidden">
+                            <div className="flex items-center justify-between px-4 py-3 bg-blue-50 border-b border-blue-200">
+                              <div className="flex items-center gap-2">
+                                <Package className="h-5 w-5 text-blue-700" />
+                                <h4 className="font-semibold text-blue-800">Itens da Obra</h4>
+                                {workItems[work.id] && workItems[work.id].length > 0 && (
+                                  <span className="bg-blue-700 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+                                    {workItems[work.id].length}
+                                  </span>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setSelectedWorkId(work.id);
+                                  setShowItemModal(true);
+                                }}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+                              >
+                                <Plus className="h-4 w-4" />
+                                Adicionar Item
+                              </button>
+                            </div>
+
+                            {!workItems[work.id] ? (
+                              <div className="px-4 py-6 text-center">
+                                <Clock className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                                <p className="text-sm text-gray-500">Carregando itens...</p>
+                              </div>
+                            ) : workItems[work.id].length === 0 ? (
+                              <div className="px-4 py-6 text-center">
+                                <Package className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+                                <p className="text-sm text-gray-500 italic">Nenhum item adicionado a esta obra</p>
                               </div>
                             ) : (
-                              <div className="text-gray-500 text-sm italic bg-white p-4 rounded border border-gray-200">
-                                Nenhum item adicionado a esta obra
+                              <div className="divide-y divide-gray-100">
+                                {workItems[work.id].map((item) => (
+                                  <div key={item.id} className="flex items-center justify-between px-4 py-3 hover:bg-blue-50 transition-colors">
+                                    <div className="flex-1">
+                                      <div className="font-medium text-gray-900">{item.item_name}</div>
+                                      <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
+                                        <span className="px-2 py-0.5 bg-gray-100 rounded-full">{getItemTypeLabel(item.item_type)}</span>
+                                        <span>Qtd: {item.quantity}{item.unit ? ` ${item.unit}` : ''}</span>
+                                        <span>Unit: R$ {item.unit_price.toFixed(2)}</span>
+                                        {item.notes && <span className="italic text-gray-400">{item.notes}</span>}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-3 ml-4 flex-shrink-0">
+                                      <span className="font-semibold text-blue-700 text-base">
+                                        R$ {item.total_price.toFixed(2)}
+                                      </span>
+                                      <button
+                                        onClick={() => handleDeleteItem(item.id, work.id)}
+                                        className="p-1.5 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                                        title="Excluir item"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+
+                                {/* Totals footer */}
+                                <div className="px-4 py-3 bg-blue-50 flex items-center justify-between text-sm">
+                                  <span className="text-gray-600 font-medium">
+                                    {workItems[work.id].length} item{workItems[work.id].length !== 1 ? 's' : ''}
+                                  </span>
+                                  <span className="font-bold text-blue-700">
+                                    Total: R$ {workItems[work.id].reduce((s, i) => s + (i.total_price || 0), 0).toFixed(2)}
+                                  </span>
+                                </div>
                               </div>
                             )}
                           </div>
 
                           {work.notes && (
                             <div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
-                              <h4 className="font-semibold text-gray-700 mb-2">Observações:</h4>
+                              <h4 className="font-semibold text-gray-700 mb-2">Observacoes:</h4>
                               <p className="text-sm text-gray-600">{work.notes}</p>
                             </div>
                           )}
@@ -829,6 +1135,7 @@ export default function ConstructionProjects() {
         </table>
       </div>
 
+      {/* Modal: Nova/Editar Obra */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
@@ -844,9 +1151,7 @@ export default function ConstructionProjects() {
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Cliente *
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Cliente *</label>
                   <select
                     value={formData.customer_id}
                     onChange={(e) => setFormData({ ...formData, customer_id: e.target.value })}
@@ -855,17 +1160,13 @@ export default function ConstructionProjects() {
                   >
                     <option value="">Selecione um cliente...</option>
                     {customers.map((customer) => (
-                      <option key={customer.id} value={customer.id}>
-                        {customer.name}
-                      </option>
+                      <option key={customer.id} value={customer.id}>{customer.name}</option>
                     ))}
                   </select>
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Nome da Obra *
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Nome da Obra *</label>
                   <input
                     type="text"
                     value={formData.work_name}
@@ -876,9 +1177,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Área (m²)
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Area (m²)</label>
                   <input
                     type="number"
                     step="0.01"
@@ -889,9 +1188,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Tipo de Área
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de Area</label>
                   <select
                     value={formData.area_type}
                     onChange={(e) => setFormData({ ...formData, area_type: e.target.value as 'rural' | 'urbana' })}
@@ -903,9 +1200,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Tipo de Construção
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de Construcao</label>
                   <select
                     value={formData.construction_type}
                     onChange={(e) => setFormData({ ...formData, construction_type: e.target.value as any })}
@@ -914,14 +1209,12 @@ export default function ConstructionProjects() {
                     <option value="residencial">Residencial</option>
                     <option value="comercial">Comercial</option>
                     <option value="industrial">Industrial</option>
-                    <option value="rural">Construção Rural</option>
+                    <option value="rural">Construcao Rural</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Ocupação
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Ocupacao</label>
                   <select
                     value={formData.occupancy_type}
                     onChange={(e) => setFormData({ ...formData, occupancy_type: e.target.value as any })}
@@ -933,9 +1226,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Endereço
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Endereco</label>
                   <input
                     type="text"
                     value={formData.address}
@@ -945,9 +1236,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Cidade
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Cidade</label>
                   <input
                     type="text"
                     value={formData.city}
@@ -957,9 +1246,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Estado
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Estado</label>
                   <input
                     type="text"
                     value={formData.state}
@@ -970,9 +1257,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    CEP
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">CEP</label>
                   <input
                     type="text"
                     value={formData.zip_code}
@@ -982,9 +1267,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Tipo de Contrato *
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de Contrato *</label>
                   <select
                     value={formData.contract_type}
                     onChange={(e) => setFormData({ ...formData, contract_type: e.target.value as any })}
@@ -992,15 +1275,13 @@ export default function ConstructionProjects() {
                     required
                   >
                     <option value="pacote_fechado">Pacote Fechado</option>
-                    <option value="administracao">Por Administração</option>
+                    <option value="administracao">Por Administracao</option>
                   </select>
                 </div>
 
                 {formData.contract_type === 'pacote_fechado' && (
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Valor Total do Pacote *
-                    </label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Valor Total do Pacote *</label>
                     <input
                       type="number"
                       step="0.01"
@@ -1014,9 +1295,7 @@ export default function ConstructionProjects() {
 
                 {formData.contract_type === 'administracao' && (
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Percentual de Administração (%) *
-                    </label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Percentual de Administracao (%) *</label>
                     <input
                       type="number"
                       step="0.01"
@@ -1029,9 +1308,7 @@ export default function ConstructionProjects() {
                 )}
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Status
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
                   <select
                     value={formData.status}
                     onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
@@ -1039,15 +1316,13 @@ export default function ConstructionProjects() {
                   >
                     <option value="em_andamento">Em Andamento</option>
                     <option value="pausada">Pausada</option>
-                    <option value="concluida">Concluída</option>
+                    <option value="concluida">Concluida</option>
                     <option value="cancelada">Cancelada</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Data de Início
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Data de Inicio</label>
                   <input
                     type="date"
                     value={formData.start_date}
@@ -1057,9 +1332,7 @@ export default function ConstructionProjects() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Previsão de Término
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Previsao de Termino</label>
                   <input
                     type="date"
                     value={formData.estimated_end_date}
@@ -1070,9 +1343,7 @@ export default function ConstructionProjects() {
 
                 {formData.status === 'concluida' && (
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Data de Conclusão
-                    </label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Data de Conclusao</label>
                     <input
                       type="date"
                       value={formData.actual_end_date}
@@ -1083,9 +1354,7 @@ export default function ConstructionProjects() {
                 )}
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Observações
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Observacoes</label>
                   <textarea
                     value={formData.notes}
                     onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
@@ -1096,11 +1365,7 @@ export default function ConstructionProjects() {
               </div>
 
               <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="px-4 py-2 border rounded-lg hover:bg-gray-50"
-                >
+                <button type="button" onClick={resetForm} className="px-4 py-2 border rounded-lg hover:bg-gray-50">
                   Cancelar
                 </button>
                 <button
@@ -1116,24 +1381,17 @@ export default function ConstructionProjects() {
         </div>
       )}
 
+      {/* Modal: Adicionar Item */}
       {showItemModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-bold text-gray-900">Adicionar Item à Obra</h3>
+              <h3 className="text-xl font-bold text-gray-900">Adicionar Item a Obra</h3>
               <button
                 onClick={() => {
                   setShowItemModal(false);
                   setSelectedWorkId('');
-                  setNewItem({
-                    item_type: 'product',
-                    item_id: '',
-                    item_name: '',
-                    quantity: 1,
-                    unit_price: 0,
-                    unit: '',
-                    notes: ''
-                  });
+                  setNewItem({ item_type: 'product', item_id: '', item_name: '', quantity: 1, unit_price: 0, unit: '', notes: '' });
                 }}
                 className="text-gray-500 hover:text-gray-700"
               >
@@ -1143,36 +1401,23 @@ export default function ConstructionProjects() {
 
             <form onSubmit={handleAddItem} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Tipo de Item *
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de Item *</label>
                 <select
                   value={newItem.item_type}
-                  onChange={(e) => {
-                    setNewItem({
-                      ...newItem,
-                      item_type: e.target.value as any,
-                      item_id: '',
-                      item_name: '',
-                      unit_price: 0,
-                      unit: ''
-                    });
-                  }}
+                  onChange={(e) => setNewItem({ ...newItem, item_type: e.target.value as any, item_id: '', item_name: '', unit_price: 0, unit: '' })}
                   className="w-full px-3 py-2 border rounded-lg"
                   required
                 >
                   <option value="product">Produto</option>
                   <option value="material">Insumo</option>
-                  <option value="composition">Composição</option>
-                  <option value="service">Serviço</option>
+                  <option value="composition">Composicao</option>
+                  <option value="service">Servico</option>
                 </select>
               </div>
 
               {newItem.item_type === 'service' ? (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Nome do Serviço *
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Nome do Servico *</label>
                   <input
                     type="text"
                     value={newItem.item_name}
@@ -1184,7 +1429,7 @@ export default function ConstructionProjects() {
               ) : (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Selecione o {newItem.item_type === 'product' ? 'Produto' : newItem.item_type === 'material' ? 'Insumo' : 'Composição'} *
+                    Selecione o {newItem.item_type === 'product' ? 'Produto' : newItem.item_type === 'material' ? 'Insumo' : 'Composicao'} *
                   </label>
                   <select
                     value={newItem.item_id}
@@ -1193,7 +1438,6 @@ export default function ConstructionProjects() {
                       let selectedItem: any = null;
                       let price = 0;
                       let unit = '';
-
                       if (newItem.item_type === 'product') {
                         selectedItem = products.find(p => p.id === selectedId);
                         price = selectedItem?.sale_price || 0;
@@ -1207,33 +1451,20 @@ export default function ConstructionProjects() {
                         price = selectedItem?.total_cost || 0;
                         unit = selectedItem?.unit || '';
                       }
-
-                      setNewItem({
-                        ...newItem,
-                        item_id: selectedId,
-                        item_name: selectedItem?.name || '',
-                        unit_price: price,
-                        unit: unit
-                      });
+                      setNewItem({ ...newItem, item_id: selectedId, item_name: selectedItem?.name || '', unit_price: price, unit });
                     }}
                     className="w-full px-3 py-2 border rounded-lg"
                     required
                   >
                     <option value="">Selecione...</option>
-                    {newItem.item_type === 'product' && products.map(product => (
-                      <option key={product.id} value={product.id}>
-                        {product.name} - {product.unit} - R$ {product.sale_price.toFixed(2)}
-                      </option>
+                    {newItem.item_type === 'product' && products.map(p => (
+                      <option key={p.id} value={p.id}>{p.name} - {p.unit} - R$ {p.sale_price.toFixed(2)}</option>
                     ))}
-                    {newItem.item_type === 'material' && materials.map(material => (
-                      <option key={material.id} value={material.id}>
-                        {material.name} - {material.unit} - R$ {material.resale_price.toFixed(2)}
-                      </option>
+                    {newItem.item_type === 'material' && materials.map(m => (
+                      <option key={m.id} value={m.id}>{m.name} - {m.unit} - R$ {m.resale_price.toFixed(2)}</option>
                     ))}
-                    {newItem.item_type === 'composition' && compositions.map(composition => (
-                      <option key={composition.id} value={composition.id}>
-                        {composition.name} - {composition.unit} - R$ {composition.total_cost.toFixed(2)}
-                      </option>
+                    {newItem.item_type === 'composition' && compositions.map(c => (
+                      <option key={c.id} value={c.id}>{c.name} - {c.unit} - R$ {c.total_cost.toFixed(2)}</option>
                     ))}
                   </select>
                 </div>
@@ -1241,9 +1472,7 @@ export default function ConstructionProjects() {
 
               {newItem.item_type === 'service' && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Unidade *
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Unidade *</label>
                   <input
                     type="text"
                     value={newItem.unit}
@@ -1256,9 +1485,7 @@ export default function ConstructionProjects() {
               )}
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Quantidade *
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Quantidade *</label>
                 <input
                   type="number"
                   step="0.001"
@@ -1271,9 +1498,7 @@ export default function ConstructionProjects() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Preço Unitário
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Preco Unitario</label>
                 <input
                   type="number"
                   step="0.01"
@@ -1284,9 +1509,7 @@ export default function ConstructionProjects() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Observações
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Observacoes</label>
                 <textarea
                   value={newItem.notes}
                   onChange={(e) => setNewItem({ ...newItem, notes: e.target.value })}
@@ -1297,8 +1520,7 @@ export default function ConstructionProjects() {
 
               <div className="bg-blue-50 p-3 rounded-lg">
                 <p className="text-sm text-gray-700">
-                  <span className="font-semibold">Total:</span> R${' '}
-                  {(newItem.quantity * newItem.unit_price).toFixed(2)}
+                  <span className="font-semibold">Total:</span> R$ {(newItem.quantity * newItem.unit_price).toFixed(2)}
                 </p>
               </div>
 
@@ -1314,14 +1536,123 @@ export default function ConstructionProjects() {
         </div>
       )}
 
+      {/* Modal: Registrar/Editar Pagamento */}
+      {showPaymentModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <CreditCard className="h-6 w-6 text-green-600" />
+                <h3 className="text-xl font-bold text-gray-900">
+                  {editingPayment ? 'Editar Pagamento' : 'Registrar Pagamento Recebido'}
+                </h3>
+              </div>
+              <button
+                onClick={() => { setShowPaymentModal(false); setEditingPayment(null); setPaymentWorkId(''); }}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePayment} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Data do Pagamento *</label>
+                <input
+                  type="date"
+                  value={paymentForm.payment_date}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, payment_date: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Valor Recebido (R$) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={paymentForm.payment_amount}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, payment_amount: parseFloat(e.target.value) || 0 })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Forma de Pagamento *</label>
+                <select
+                  value={paymentForm.payment_method}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, payment_method: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  required
+                >
+                  {Object.entries(PAYMENT_METHOD_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Descricao / Referencia</label>
+                <input
+                  type="text"
+                  value={paymentForm.origin_description}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, origin_description: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  placeholder="Ex: Parcela 1/3, Sinal, etc."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Numero do Recibo</label>
+                <input
+                  type="text"
+                  value={paymentForm.receipt_number}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, receipt_number: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  placeholder="Opcional"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Observacoes</label>
+                <textarea
+                  value={paymentForm.notes}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })}
+                  rows={2}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  placeholder="Opcional"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowPaymentModal(false); setEditingPayment(null); setPaymentWorkId(''); }}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700"
+                >
+                  <Save className="h-5 w-5" />
+                  {editingPayment ? 'Salvar Alteracoes' : 'Registrar Pagamento'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Statement Modal */}
       {showStatementModal && selectedWorkForStatement && (
         <ConstructionWorkStatement
           work={selectedWorkForStatement}
-          onClose={() => {
-            setShowStatementModal(false);
-            setSelectedWorkForStatement(null);
-          }}
+          onClose={() => { setShowStatementModal(false); setSelectedWorkForStatement(null); }}
         />
       )}
     </div>
