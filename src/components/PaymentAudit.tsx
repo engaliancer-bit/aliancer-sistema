@@ -134,126 +134,194 @@ const COST_LIKE_INCOME_CATEGORIES = [
   'servico',
 ];
 
-// SQL queries for export
-const SQL_AUDIT_QUERIES = `-- ================================================================
---  AUDITORIA COMPLETA DE INTEGRIDADE DE PAGAMENTOS - ALIANCER
---  Todas as queries sao SOMENTE LEITURA (SELECT)
---  Aplique filtro de periodo substituindo as datas conforme necessario
+// ─── Phase-2 SQL Queries (structured, one per dimension) ──────────────────────
+
+interface SqlQuery {
+  id: string;
+  label: string;
+  description: string;
+  color: string;
+  sql: string;
+}
+
+const PHASE2_QUERIES: SqlQuery[] = [
+  {
+    id: 'q1',
+    label: 'Q1 — Pagamentos Orfaos',
+    description: 'Identifica receitas sem cliente valido, sem origem ou vinculadas a obras inexistentes, agrupando por tipo de problema e valor em risco.',
+    color: 'text-red-600',
+    sql: `-- ================================================================
+-- QUERY 1: PAGAMENTOS ORFAOS
+-- Identifica pagamentos sem vinculo correto, agrupados por status
+-- ================================================================
+WITH pagamentos_orfaos AS (
+  SELECT
+    cr.id,
+    cr.customer_id,
+    cr.origin_type,
+    cr.origin_id,
+    cr.payment_amount,
+    cr.payment_date,
+    CASE
+      WHEN cr.customer_id IS NULL
+        THEN 'SEM_CLIENTE'
+      WHEN cr.origin_id IS NULL
+        THEN 'SEM_ORIGEM'
+      WHEN cr.origin_type = 'construction_work'
+        AND NOT EXISTS (
+          SELECT 1 FROM construction_works cw
+          WHERE cw.id = cr.origin_id
+        ) THEN 'OBRA_NAO_EXISTE'
+      WHEN cr.origin_type = 'quote'
+        AND NOT EXISTS (
+          SELECT 1 FROM quotes q
+          WHERE q.id = cr.origin_id
+        ) THEN 'ORCAMENTO_NAO_EXISTE'
+      ELSE 'OK'
+    END AS status_vinculo
+  FROM customer_revenue cr
+  WHERE COALESCE(cr.estornado, false) = false
+)
+SELECT
+  status_vinculo,
+  COUNT(*)               AS total_orfaos,
+  SUM(payment_amount)    AS valor_em_risco,
+  ARRAY_AGG(id)          AS ids_afetados
+FROM pagamentos_orfaos
+WHERE status_vinculo <> 'OK'
+GROUP BY status_vinculo
+ORDER BY valor_em_risco DESC NULLS LAST;
+
+-- Detalhe individual de cada orfao:
+SELECT
+  po.id,
+  po.status_vinculo,
+  c.name             AS customer_name,
+  po.origin_type,
+  po.origin_id,
+  po.payment_amount,
+  po.payment_date
+FROM (
+  SELECT cr.*,
+    CASE
+      WHEN cr.customer_id IS NULL THEN 'SEM_CLIENTE'
+      WHEN cr.origin_id IS NULL THEN 'SEM_ORIGEM'
+      WHEN cr.origin_type = 'construction_work'
+           AND NOT EXISTS (SELECT 1 FROM construction_works WHERE id = cr.origin_id)
+        THEN 'OBRA_NAO_EXISTE'
+      WHEN cr.origin_type = 'quote'
+           AND NOT EXISTS (SELECT 1 FROM quotes WHERE id = cr.origin_id)
+        THEN 'ORCAMENTO_NAO_EXISTE'
+      ELSE 'OK'
+    END AS status_vinculo
+  FROM customer_revenue cr
+  WHERE COALESCE(cr.estornado, false) = false
+) po
+LEFT JOIN customers c ON c.id = po.customer_id
+WHERE po.status_vinculo <> 'OK'
+ORDER BY po.payment_date DESC;`,
+  },
+  {
+    id: 'q2',
+    label: 'Q2 — Inconsistencias de Vinculo',
+    description: 'Detecta divergencias de customer_id entre customer_revenue e construction_works, e entre customer_revenue e cash_flow vinculado.',
+    color: 'text-orange-600',
+    sql: `-- ================================================================
+-- QUERY 2: INCONSISTENCIAS DE VINCULO
+-- Divergencias de customer_id entre tabelas relacionadas
 -- ================================================================
 
--- ==============================================================
--- DIMENSAO 1: PAGAMENTOS ORFAOS
--- ==============================================================
-
--- [1A] Receitas em customer_revenue sem customer_id valido
+-- [2A] customer_revenue aponta para obra de outro cliente
 SELECT
-  cr.id            AS revenue_id,
-  cr.customer_id,
-  cr.origin_type,
-  cr.origin_description,
-  cr.payment_date,
-  cr.payment_amount,
-  cr.estornado
-FROM customer_revenue cr
-LEFT JOIN customers c ON c.id = cr.customer_id
-WHERE c.id IS NULL
-ORDER BY cr.payment_date DESC;
-
--- [1B] Entradas de caixa (income) sem customer_id E sem customer_revenue_id
---     (entradas manuais possivelmente orfas)
-SELECT
-  cf.id,
-  cf.date,
-  cf.category,
-  cf.description,
-  cf.amount,
-  cf.construction_work_id,
-  cf.business_unit
-FROM cash_flow cf
-WHERE cf.type = 'income'
-  AND cf.customer_id IS NULL
-  AND cf.customer_revenue_id IS NULL
-  AND cf.sale_id IS NULL
-ORDER BY cf.date DESC;
-
--- [1C] Receitas de obra vinculadas a obra inexistente
-SELECT
-  cr.id            AS revenue_id,
-  cr.customer_id,
-  c.name           AS customer_name,
-  cr.origin_id     AS work_id,
-  cr.payment_date,
-  cr.payment_amount
-FROM customer_revenue cr
-LEFT JOIN customers c ON c.id = cr.customer_id
-LEFT JOIN construction_works cw ON cw.id = cr.origin_id
-WHERE cr.origin_type = 'construction_work'
-  AND cw.id IS NULL
-ORDER BY cr.payment_date DESC;
-
--- ==============================================================
--- DIMENSAO 2: INCONSISTENCIAS DE VINCULO
--- ==============================================================
-
--- [2A] customer_revenue.customer_id != construction_works.customer_id
-SELECT
-  cr.id            AS revenue_id,
-  cr.customer_id   AS payment_customer_id,
-  cust.name        AS payment_customer,
-  cw.customer_id   AS work_customer_id,
-  c2.name          AS work_customer,
+  cr.id              AS revenue_id,
+  cr.customer_id     AS revenue_customer_id,
+  cust.name          AS revenue_customer,
+  cw.customer_id     AS work_customer_id,
+  c2.name            AS work_customer,
   cw.work_name,
   cr.payment_date,
-  cr.payment_amount
+  cr.payment_amount,
+  'CLIENTE_OBRA_DIVERGE' AS tipo_inconsistencia
 FROM customer_revenue cr
 JOIN construction_works cw ON cw.id = cr.origin_id
 JOIN customers cust ON cust.id = cr.customer_id
-JOIN customers c2 ON c2.id = cw.customer_id
+JOIN customers c2   ON c2.id = cw.customer_id
 WHERE cr.origin_type = 'construction_work'
-  AND cw.customer_id <> cr.customer_id
+  AND cr.customer_id IS DISTINCT FROM cw.customer_id
+  AND COALESCE(cr.estornado, false) = false
 ORDER BY cr.payment_date DESC;
 
 -- [2B] customer_id divergente entre customer_revenue e cash_flow vinculado
 SELECT
-  cr.id            AS revenue_id,
-  cf.id            AS cashflow_id,
-  cr.customer_id   AS revenue_customer_id,
+  cr.id              AS revenue_id,
+  cf.id              AS cashflow_id,
+  cr.customer_id     AS revenue_customer_id,
+  c1.name            AS revenue_customer,
+  cf.customer_id     AS cashflow_customer_id,
+  c2.name            AS cashflow_customer,
   cr.payment_date,
   cr.payment_amount,
-  cf.customer_id   AS cashflow_customer_id,
-  c1.name          AS revenue_customer,
-  c2.name          AS cashflow_customer
+  'CLIENTE_CF_DIVERGE' AS tipo_inconsistencia
 FROM customer_revenue cr
 JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
 LEFT JOIN customers c1 ON c1.id = cr.customer_id
 LEFT JOIN customers c2 ON c2.id = cf.customer_id
 WHERE cf.customer_id IS NOT NULL
-  AND cf.customer_id <> cr.customer_id
+  AND cf.customer_id IS DISTINCT FROM cr.customer_id
+  AND COALESCE(cr.estornado, false) = false
 ORDER BY cr.payment_date DESC;
 
--- ==============================================================
--- DIMENSAO 3: DUPLICACOES
--- ==============================================================
+-- Resumo agregado das duas inconsistencias:
+WITH inconsistencias AS (
+  SELECT 'CLIENTE_OBRA_DIVERGE' AS tipo, cr.payment_amount
+  FROM customer_revenue cr
+  JOIN construction_works cw ON cw.id = cr.origin_id
+  WHERE cr.origin_type = 'construction_work'
+    AND cr.customer_id IS DISTINCT FROM cw.customer_id
+    AND COALESCE(cr.estornado, false) = false
+  UNION ALL
+  SELECT 'CLIENTE_CF_DIVERGE', cr.payment_amount
+  FROM customer_revenue cr
+  JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+  WHERE cf.customer_id IS NOT NULL
+    AND cf.customer_id IS DISTINCT FROM cr.customer_id
+    AND COALESCE(cr.estornado, false) = false
+)
+SELECT tipo, COUNT(*) AS total_registros, SUM(payment_amount) AS valor_total_afetado
+FROM inconsistencias
+GROUP BY tipo
+ORDER BY valor_total_afetado DESC NULLS LAST;`,
+  },
+  {
+    id: 'q3',
+    label: 'Q3 — Duplicacoes',
+    description: 'Encontra receitas duplicadas no customer_revenue, entradas de caixa legadas coexistindo com registros modernos, e duplicatas exatas no cash_flow.',
+    color: 'text-yellow-600',
+    sql: `-- ================================================================
+-- QUERY 3: DUPLICACOES
+-- Receitas e entradas de caixa registradas mais de uma vez
+-- ================================================================
 
 -- [3A] Receitas duplicadas: mesmo (customer_id, origin_type, origin_id)
---     Nota: existe unique constraint, mas pode haver violacoes antigas
 SELECT
-  customer_id,
-  origin_type,
-  origin_id,
-  COUNT(*)         AS num_registros,
-  SUM(payment_amount) AS total_valor,
-  MIN(payment_date) AS primeira_data,
-  MAX(payment_date) AS ultima_data
-FROM customer_revenue
-WHERE COALESCE(estornado, false) = false
-GROUP BY customer_id, origin_type, origin_id
+  cr.customer_id,
+  c.name             AS customer_name,
+  cr.origin_type,
+  cr.origin_id,
+  COUNT(*)           AS total_duplicatas,
+  SUM(cr.payment_amount) AS soma_pago,
+  MIN(cr.payment_date)   AS primeira_data,
+  MAX(cr.payment_date)   AS ultima_data,
+  ARRAY_AGG(cr.id ORDER BY cr.created_at DESC) AS ids_duplicados
+FROM customer_revenue cr
+LEFT JOIN customers c ON c.id = cr.customer_id
+WHERE COALESCE(cr.estornado, false) = false
+GROUP BY cr.customer_id, c.name, cr.origin_type, cr.origin_id
 HAVING COUNT(*) > 1
-ORDER BY num_registros DESC;
+ORDER BY soma_pago DESC;
 
--- [3B] Mesma receita em customer_revenue E em cash_flow legado
---     (cash_flow com construction_work_id e sem customer_revenue_id,
---      mas ja existe customer_revenue para a mesma obra)
+-- [3B] Entradas de caixa legadas (sem customer_revenue_id) para obras
+--     que JA possuem customer_revenue moderno
 WITH revenue_work_ids AS (
   SELECT DISTINCT origin_id
   FROM customer_revenue
@@ -261,13 +329,14 @@ WITH revenue_work_ids AS (
     AND COALESCE(estornado, false) = false
 )
 SELECT
-  cf.id            AS cashflow_id,
-  cf.construction_work_id AS work_id,
+  cf.id              AS cashflow_id,
+  cf.construction_work_id,
   cw.work_name,
   cf.date,
   cf.amount,
   cf.description,
-  cf.category
+  cf.category,
+  'CF_LEGADO_DUPLICADO' AS tipo_duplicacao
 FROM cash_flow cf
 JOIN construction_works cw ON cw.id = cf.construction_work_id
 WHERE cf.type = 'income'
@@ -275,26 +344,112 @@ WHERE cf.type = 'income'
   AND cf.construction_work_id IN (SELECT origin_id FROM revenue_work_ids)
 ORDER BY cf.date DESC;
 
--- [3C] Mesmo valor + data + cliente no cash_flow (duplicatas exatas)
+-- [3C] Duplicatas exatas no cash_flow: mesmo cliente + data + valor + categoria
 SELECT
   customer_id,
   date,
   amount,
   category,
-  COUNT(*) AS num_duplicatas,
-  array_agg(id) AS ids
+  COUNT(*)       AS num_duplicatas,
+  ARRAY_AGG(id) AS ids
 FROM cash_flow
 WHERE type = 'income'
 GROUP BY customer_id, date, amount, category
 HAVING COUNT(*) > 1
 ORDER BY num_duplicatas DESC, amount DESC;
 
--- ==============================================================
--- DIMENSAO 4: CATEGORIZACOES INCORRETAS
--- ==============================================================
+-- Resumo consolidado:
+SELECT
+  'RECEITA_DUPLICADA'    AS tipo,
+  COUNT(*)               AS grupos_afetados,
+  SUM(soma_pago)         AS valor_duplicado
+FROM (
+  SELECT SUM(payment_amount) AS soma_pago
+  FROM customer_revenue
+  WHERE COALESCE(estornado, false) = false
+  GROUP BY customer_id, origin_type, origin_id
+  HAVING COUNT(*) > 1
+) dup_rev
+UNION ALL
+SELECT
+  'CF_LEGADO_DUPLICADO',
+  COUNT(*),
+  SUM(amount)
+FROM cash_flow cf
+WHERE type = 'income'
+  AND customer_revenue_id IS NULL
+  AND construction_work_id IN (
+    SELECT DISTINCT origin_id FROM customer_revenue
+    WHERE origin_type = 'construction_work'
+      AND COALESCE(estornado, false) = false
+  )
+UNION ALL
+SELECT
+  'CF_EXATO_DUPLICADO',
+  COUNT(*),
+  SUM(amount * (cnt - 1))
+FROM (
+  SELECT amount, COUNT(*) AS cnt
+  FROM cash_flow
+  WHERE type = 'income'
+  GROUP BY customer_id, date, amount, category
+  HAVING COUNT(*) > 1
+) d;`,
+  },
+  {
+    id: 'q4',
+    label: 'Q4 — Categorizacoes Incorretas',
+    description: 'Localiza entradas de receita com categorias que indicam custo/despesa, e itens de obra com valor zerado ou negativo.',
+    color: 'text-blue-600',
+    sql: `-- ================================================================
+-- QUERY 4: CATEGORIZACOES INCORRETAS
+-- Entradas com tipo/categoria incoerente
+-- ================================================================
 
--- [4A] Itens de obra (construction_work_items) com item_type errado
---      ou preco zerado sendo contabilizados como pagamento
+-- [4A] cash_flow do tipo income com categoria que parece despesa/custo
+SELECT
+  cf.id,
+  cf.date,
+  cf.category,
+  cf.description,
+  cf.amount,
+  cf.customer_id,
+  c.name             AS customer_name,
+  cf.construction_work_id,
+  cf.business_unit,
+  'CATEGORIA_CUSTO_COMO_RECEITA' AS tipo_problema
+FROM cash_flow cf
+LEFT JOIN customers c ON c.id = cf.customer_id
+WHERE cf.type = 'income'
+  AND lower(cf.category) = ANY(ARRAY[
+    'item da obra', 'item_obra', 'custo', 'cost',
+    'despesa', 'expense', 'material', 'produto', 'servico'
+  ])
+ORDER BY cf.date DESC;
+
+-- [4B] cash_flow income com categoria desconhecida (nao esta na lista padrao)
+SELECT
+  cf.id,
+  cf.date,
+  cf.category,
+  cf.description,
+  cf.amount,
+  cf.business_unit,
+  'CATEGORIA_DESCONHECIDA' AS tipo_problema
+FROM cash_flow cf
+WHERE cf.type = 'income'
+  AND cf.category NOT IN (
+    'receita_cliente',
+    'Servicos de Engenharia', 'Serviços de Engenharia',
+    'Venda de Produtos', 'Venda Construtora',
+    'Servicos de Muck', 'Outras Receitas',
+    'income', 'receita', 'pagamento', 'Pagamento',
+    'item da obra', 'item_obra', 'custo', 'cost',
+    'despesa', 'expense', 'material', 'produto', 'servico'
+  )
+ORDER BY cf.date DESC;
+
+-- [4C] Itens de obra com preco zero ou negativo
 SELECT
   cwi.id,
   cwi.work_id,
@@ -303,96 +458,103 @@ SELECT
   cwi.item_name,
   cwi.quantity,
   cwi.unit_price,
-  cwi.total_price
+  cwi.total_price,
+  'ITEM_OBRA_VALOR_INVALIDO' AS tipo_problema
 FROM construction_work_items cwi
 JOIN construction_works cw ON cw.id = cwi.work_id
 WHERE cwi.total_price = 0
    OR cwi.unit_price < 0
 ORDER BY cwi.total_price ASC;
 
--- [4B] Entradas de caixa do tipo 'income' com categoria estranha
---      (categorias que soam como despesa/custo sendo registradas como receita)
+-- Resumo por categoria suspeita:
 SELECT
-  id,
-  date,
-  category,
-  description,
-  amount,
-  customer_id,
-  construction_work_id,
-  customer_revenue_id,
-  business_unit
+  lower(category)    AS categoria,
+  COUNT(*)           AS total_entradas,
+  SUM(amount)        AS valor_total,
+  'CATEGORIA_CUSTO_COMO_RECEITA' AS tipo_problema
 FROM cash_flow
 WHERE type = 'income'
-  AND lower(category) IN (
-    'item da obra', 'item_obra', 'custo', 'cost',
-    'despesa', 'expense', 'material', 'produto'
-  )
-ORDER BY date DESC;
+  AND lower(category) = ANY(ARRAY[
+    'item da obra','item_obra','custo','cost',
+    'despesa','expense','material','produto','servico'
+  ])
+GROUP BY lower(category)
+ORDER BY valor_total DESC;`,
+  },
+  {
+    id: 'q5',
+    label: 'Q5 — Valores Inconsistentes',
+    description: 'Verifica divergencias de valor entre customer_revenue e cash_flow, saldos mal calculados, parcelas cujo total nao fecha com o orcamento, e parcelas pagas sem receita registrada.',
+    color: 'text-green-600',
+    sql: `-- ================================================================
+-- QUERY 5: VALORES INCONSISTENTES
+-- Divergencias numericas entre tabelas relacionadas
+-- ================================================================
 
--- [4C] Entradas de caixa de 'income' sem categoria conhecida
+-- [5A] Valor divergente entre customer_revenue e cash_flow vinculado
 SELECT
-  id,
-  date,
-  category,
-  description,
-  amount,
-  business_unit
-FROM cash_flow
-WHERE type = 'income'
-  AND category NOT IN (
-    'receita_cliente', 'Serviços de Engenharia',
-    'Venda de Produtos', 'Venda Construtora',
-    'Servicos de Muck', 'Outras Receitas',
-    'income', 'receita', 'pagamento', 'Pagamento'
-  )
-ORDER BY date DESC;
-
--- ==============================================================
--- DIMENSAO 5: VALORES INCONSISTENTES
--- ==============================================================
-
--- [5A] Divergencia de valor entre customer_revenue e cash_flow
-SELECT
-  cr.id            AS revenue_id,
-  cf.id            AS cashflow_id,
+  cr.id              AS revenue_id,
+  cf.id              AS cashflow_id,
+  c.name             AS customer_name,
   cr.payment_date,
-  cr.payment_amount AS revenue_amount,
-  cf.amount        AS cashflow_amount,
+  cr.payment_amount  AS valor_revenue,
+  cf.amount          AS valor_cf,
   ABS(cr.payment_amount - cf.amount) AS diferenca,
-  c.name           AS customer_name
+  'VALOR_DIVERGE_CF'  AS tipo_problema
 FROM customer_revenue cr
 JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
 LEFT JOIN customers c ON c.id = cr.customer_id
 WHERE ABS(cr.payment_amount - cf.amount) > 0.01
-ORDER BY ABS(cr.payment_amount - cf.amount) DESC;
+  AND COALESCE(cr.estornado, false) = false
+ORDER BY diferenca DESC;
 
--- [5B] Total de parcelas != valor total do orcamento
+-- [5B] customer_revenue.balance != total_amount - paid_amount
 SELECT
-  q.id             AS quote_id,
-  c.name           AS customer_name,
-  q.total_value    AS valor_orcamento,
-  COUNT(qi.id)     AS num_parcelas,
+  cr.id,
+  c.name             AS customer_name,
+  cr.origin_type,
+  cr.origin_description,
+  cr.total_amount,
+  cr.paid_amount,
+  cr.balance         AS balance_atual,
+  (cr.total_amount - cr.paid_amount) AS balance_esperado,
+  ABS(cr.balance - (cr.total_amount - cr.paid_amount)) AS diferenca,
+  'SALDO_INCONSISTENTE' AS tipo_problema
+FROM customer_revenue cr
+LEFT JOIN customers c ON c.id = cr.customer_id
+WHERE ABS(cr.balance - (cr.total_amount - cr.paid_amount)) > 0.01
+  AND cr.total_amount > 0
+ORDER BY diferenca DESC;
+
+-- [5C] Soma das parcelas difere do total do orcamento
+SELECT
+  q.id               AS quote_id,
+  c.name             AS customer_name,
+  q.total_value      AS valor_orcamento,
+  COUNT(qi.id)       AS num_parcelas,
   SUM(qi.installment_amount) AS soma_parcelas,
-  ABS(q.total_value - SUM(qi.installment_amount)) AS diferenca
+  ABS(q.total_value - SUM(qi.installment_amount)) AS diferenca,
+  'PARCELAS_NAO_BATEM' AS tipo_problema
 FROM quotes q
 JOIN customers c ON c.id = q.customer_id
 JOIN quote_installments qi ON qi.quote_id = q.id
 WHERE q.has_installment_schedule = true
+  AND q.status = 'approved'
 GROUP BY q.id, c.name, q.total_value
 HAVING ABS(q.total_value - SUM(qi.installment_amount)) > 0.01
-ORDER BY ABS(q.total_value - SUM(qi.installment_amount)) DESC;
+ORDER BY diferenca DESC;
 
--- [5C] Parcelas pagas sem receita correspondente em customer_revenue
+-- [5D] Parcelas pagas sem customer_revenue correspondente
 SELECT
-  qi.id            AS installment_id,
+  qi.id              AS installment_id,
   qi.quote_id,
   qi.installment_number,
   qi.installment_amount,
   qi.paid_amount,
   qi.payment_status,
-  q.total_value    AS quote_total,
-  c.name           AS customer_name
+  qi.due_date,
+  c.name             AS customer_name,
+  'PARCELA_PAGA_SEM_RECEITA' AS tipo_problema
 FROM quote_installments qi
 JOIN quotes q ON q.id = qi.quote_id
 JOIN customers c ON c.id = q.customer_id
@@ -404,78 +566,122 @@ WHERE qi.payment_status = 'paid'
   )
 ORDER BY qi.due_date DESC;
 
--- [5D] customer_revenue.paid_amount != soma dos pagamentos registrados
-SELECT
-  cr.id,
-  c.name           AS customer_name,
-  cr.origin_type,
-  cr.origin_description,
-  cr.total_amount,
-  cr.paid_amount   AS registrado,
-  cr.payment_amount AS ultimo_pagamento,
-  cr.balance,
-  (cr.total_amount - cr.paid_amount) AS calculado_balance
-FROM customer_revenue cr
-LEFT JOIN customers c ON c.id = cr.customer_id
-WHERE ABS(cr.balance - (cr.total_amount - cr.paid_amount)) > 0.01
-ORDER BY cr.payment_date DESC;
+-- Resumo executivo das 4 sub-dimensoes de valor:
+WITH
+  v_cf AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(ABS(cr.payment_amount - cf.amount)),0) AS soma_div
+    FROM customer_revenue cr
+    JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+    WHERE ABS(cr.payment_amount - cf.amount) > 0.01
+      AND COALESCE(cr.estornado, false) = false
+  ),
+  v_saldo AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(ABS(cr.balance - (cr.total_amount - cr.paid_amount))),0) AS soma_div
+    FROM customer_revenue cr
+    WHERE ABS(cr.balance - (cr.total_amount - cr.paid_amount)) > 0.01
+      AND cr.total_amount > 0
+  ),
+  v_parc AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(ABS(q.total_value - t.soma)),0) AS soma_div
+    FROM quotes q
+    JOIN (
+      SELECT quote_id, SUM(installment_amount) AS soma
+      FROM quote_installments GROUP BY quote_id
+    ) t ON t.quote_id = q.id
+    WHERE q.has_installment_schedule = true
+      AND ABS(q.total_value - t.soma) > 0.01
+  ),
+  v_paid AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(qi.paid_amount),0) AS soma_div
+    FROM quote_installments qi
+    JOIN quotes q ON q.id = qi.quote_id
+    WHERE qi.payment_status = 'paid'
+      AND NOT EXISTS (
+        SELECT 1 FROM customer_revenue cr
+        WHERE cr.origin_type = 'quote' AND cr.origin_id = qi.quote_id
+      )
+  )
+SELECT 'VALOR_DIVERGE_CF'        AS tipo_problema, n, soma_div AS soma_divergencias FROM v_cf    UNION ALL
+SELECT 'SALDO_INCONSISTENTE',                       n, soma_div FROM v_saldo UNION ALL
+SELECT 'PARCELAS_NAO_BATEM',                        n, soma_div FROM v_parc  UNION ALL
+SELECT 'PARCELA_PAGA_SEM_RECEITA',                  n, soma_div FROM v_paid
+ORDER BY soma_divergencias DESC;`,
+  },
+];
 
--- ==============================================================
--- DIMENSAO 6: RECEITAS SEM FC
--- ==============================================================
+// Bonus executive summary query
+const SQL_EXECUTIVE_SUMMARY = `-- ================================================================
+-- RESUMO EXECUTIVO — TODAS AS DIMENSOES EM UMA QUERY
+-- ================================================================
+WITH
+  orfaos AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(payment_amount), 0) AS valor
+    FROM customer_revenue cr
+    WHERE (
+      cr.customer_id IS NULL
+      OR cr.origin_id IS NULL
+      OR (cr.origin_type = 'construction_work'
+          AND NOT EXISTS (SELECT 1 FROM construction_works WHERE id = cr.origin_id))
+      OR (cr.origin_type = 'quote'
+          AND NOT EXISTS (SELECT 1 FROM quotes WHERE id = cr.origin_id))
+    )
+    AND COALESCE(cr.estornado, false) = false
+  ),
+  inconsistencias AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(cr.payment_amount), 0) AS valor
+    FROM customer_revenue cr
+    JOIN construction_works cw ON cw.id = cr.origin_id
+    WHERE cr.origin_type = 'construction_work'
+      AND cr.customer_id IS DISTINCT FROM cw.customer_id
+      AND COALESCE(cr.estornado, false) = false
+  ),
+  duplicatas AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(soma_pago), 0) AS valor
+    FROM (
+      SELECT SUM(payment_amount) AS soma_pago
+      FROM customer_revenue
+      WHERE COALESCE(estornado, false) = false
+      GROUP BY customer_id, origin_type, origin_id
+      HAVING COUNT(*) > 1
+    ) d
+  ),
+  cats_erradas AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS valor
+    FROM cash_flow
+    WHERE type = 'income'
+      AND lower(category) = ANY(ARRAY[
+        'item da obra','item_obra','custo','cost',
+        'despesa','expense','material','produto','servico'
+      ])
+  ),
+  sem_cf AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(cr.payment_amount), 0) AS valor
+    FROM customer_revenue cr
+    LEFT JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+    WHERE cf.id IS NULL
+      AND COALESCE(cr.estornado, false) = false
+      AND cr.payment_amount > 0
+  ),
+  valor_diverge AS (
+    SELECT COUNT(*) AS n, COALESCE(SUM(ABS(cr.payment_amount - cf.amount)), 0) AS valor
+    FROM customer_revenue cr
+    JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
+    WHERE ABS(cr.payment_amount - cf.amount) > 0.01
+      AND COALESCE(cr.estornado, false) = false
+  )
+SELECT dimensao, n AS total_registros, valor AS valor_afetado
+FROM (
+  SELECT 'Q1 - Pagamentos Orfaos'        AS dimensao, n, valor FROM orfaos        UNION ALL
+  SELECT 'Q2 - Inconsistencias Vinculo',              n, valor FROM inconsistencias UNION ALL
+  SELECT 'Q3 - Duplicacoes',                          n, valor FROM duplicatas     UNION ALL
+  SELECT 'Q4 - Categorizacoes Incorretas',            n, valor FROM cats_erradas   UNION ALL
+  SELECT 'Q5 - FC Ausente',                           n, valor FROM sem_cf         UNION ALL
+  SELECT 'Q5 - Valores Divergentes',                  n, valor FROM valor_diverge
+) t
+ORDER BY valor_afetado DESC;`;
 
--- [6A] customer_revenue sem cash_flow correspondente (exclui estornados)
-SELECT
-  cr.id            AS revenue_id,
-  cr.customer_id,
-  c.name           AS customer_name,
-  cr.origin_type,
-  cr.origin_id,
-  cr.origin_description,
-  cr.payment_date,
-  cr.payment_amount,
-  cr.payment_method,
-  cr.estornado
-FROM customer_revenue cr
-LEFT JOIN customers c ON c.id = cr.customer_id
-LEFT JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-WHERE cf.id IS NULL
-  AND COALESCE(cr.estornado, false) = false
-  AND cr.payment_amount > 0
-ORDER BY cr.payment_date DESC;
-
--- ==============================================================
--- RESUMO EXECUTIVO
--- ==============================================================
-WITH checks AS (
-  SELECT '1A_orphan_customer'   AS check_id, 'orphan'          AS cat, 'critical' AS sev,
-         COUNT(*) AS n, COALESCE(SUM(cr.payment_amount),0) AS val
-  FROM customer_revenue cr LEFT JOIN customers c ON c.id = cr.customer_id WHERE c.id IS NULL
-  UNION ALL
-  SELECT '2A_work_customer_mismatch', 'inconsistency', 'warning',
-         COUNT(*), COALESCE(SUM(cr.payment_amount),0)
-  FROM customer_revenue cr JOIN construction_works cw ON cw.id = cr.origin_id
-  WHERE cr.origin_type = 'construction_work' AND cw.customer_id <> cr.customer_id
-  UNION ALL
-  SELECT '2B_cf_customer_mismatch', 'inconsistency', 'critical',
-         COUNT(*), COALESCE(SUM(cr.payment_amount),0)
-  FROM customer_revenue cr JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-  WHERE cf.customer_id IS NOT NULL AND cf.customer_id <> cr.customer_id
-  UNION ALL
-  SELECT '5A_amount_mismatch', 'inconsistency', 'critical',
-         COUNT(*), COALESCE(SUM(ABS(cr.payment_amount - cf.amount)),0)
-  FROM customer_revenue cr JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-  WHERE ABS(cr.payment_amount - cf.amount) > 0.01
-  UNION ALL
-  SELECT '6A_missing_cashflow', 'missing_cashflow', 'warning',
-         COUNT(*), COALESCE(SUM(cr.payment_amount),0)
-  FROM customer_revenue cr LEFT JOIN cash_flow cf ON cf.customer_revenue_id = cr.id
-  WHERE cf.id IS NULL AND COALESCE(cr.estornado, false) = false AND cr.payment_amount > 0
-)
-SELECT check_id, cat AS category, sev AS severity, n AS count, val AS valor_total
-FROM checks WHERE n > 0
-ORDER BY CASE sev WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, n DESC;
-`;
+// Legacy flat export (all queries combined)
+const SQL_AUDIT_QUERIES = PHASE2_QUERIES.map(q => q.sql).join('\n\n') + '\n\n' + SQL_EXECUTIVE_SUMMARY;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -507,6 +713,7 @@ export default function PaymentAudit() {
   const [fixedIds, setFixedIds] = useState<Set<string>>(new Set());
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [showSqlPanel, setShowSqlPanel] = useState(false);
+  const [activeQueryTab, setActiveQueryTab] = useState<string>('q1');
   const [dateRange, setDateRange] = useState<DateRange>({ from: firstDayOfYear(), to: today() });
   const [allPeriod, setAllPeriod] = useState(false);
 
@@ -1318,23 +1525,72 @@ export default function PaymentAudit() {
           )}
         </div>
 
-        {/* ── SQL panel ── */}
+        {/* ── SQL panel (Phase 2 tabbed) ── */}
         {showSqlPanel && (
-          <div className="mt-4 border-t border-gray-100 pt-4">
-            <div className="flex items-center justify-between mb-2">
+          <div className="mt-4 border-t border-gray-100 pt-4 space-y-3">
+            <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                Queries SQL — 6 Dimensoes (somente leitura)
+                Queries SQL — Fase 2 (somente leitura)
               </p>
               <button
                 onClick={exportSql}
                 className="text-xs text-blue-600 hover:underline flex items-center gap-1"
               >
-                <Download className="h-3 w-3" /> .sql
+                <Download className="h-3 w-3" /> Exportar .sql
               </button>
             </div>
-            <pre className="bg-gray-900 text-green-300 text-xs p-4 rounded-lg overflow-auto max-h-80 whitespace-pre">
-              {SQL_AUDIT_QUERIES}
-            </pre>
+
+            {/* Query tabs */}
+            <div className="flex flex-wrap gap-1.5">
+              {PHASE2_QUERIES.map(q => (
+                <button
+                  key={q.id}
+                  onClick={() => setActiveQueryTab(q.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    activeQueryTab === q.id
+                      ? 'bg-gray-900 text-green-300 shadow-sm'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {q.label}
+                </button>
+              ))}
+              <button
+                onClick={() => setActiveQueryTab('exec')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  activeQueryTab === 'exec'
+                    ? 'bg-gray-900 text-green-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                Resumo Executivo
+              </button>
+            </div>
+
+            {/* Active query description + copy button */}
+            {(() => {
+              const active = activeQueryTab === 'exec'
+                ? { id: 'exec', label: 'Resumo Executivo', description: 'Todas as 5 dimensoes em uma unica query consolidada, ordenadas por valor afetado.', color: 'text-gray-600', sql: SQL_EXECUTIVE_SUMMARY }
+                : PHASE2_QUERIES.find(q => q.id === activeQueryTab)!;
+              return (
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-2xl">
+                      {active.description}
+                    </p>
+                    <button
+                      onClick={() => copyToClipboard(active.sql)}
+                      className="flex-shrink-0 flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                    >
+                      <Copy className="h-3 w-3" /> Copiar
+                    </button>
+                  </div>
+                  <pre className="bg-gray-900 text-green-300 text-xs p-4 rounded-lg overflow-auto max-h-96 whitespace-pre leading-relaxed">
+                    {active.sql}
+                  </pre>
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>
