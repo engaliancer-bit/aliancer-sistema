@@ -66,6 +66,7 @@ interface WorkPaymentRecord {
   receipt_number: string;
   origin_description: string;
   created_at: string;
+  source?: 'revenue' | 'cashflow';
 }
 
 interface Product {
@@ -241,6 +242,8 @@ export default function ConstructionProjects() {
     }
   };
 
+  const VALID_WORK_ITEM_TYPES = ['product', 'material', 'composition', 'service'] as const;
+
   const loadWorkItems = async (workId: string) => {
     if (workItems[workId]) {
       return;
@@ -257,28 +260,60 @@ export default function ConstructionProjects() {
       return;
     }
 
+    const validItems = (data || []).filter(item =>
+      VALID_WORK_ITEM_TYPES.includes(item.item_type as typeof VALID_WORK_ITEM_TYPES[number])
+    );
+
     setWorkItems(prev => ({
       ...prev,
-      [workId]: data || []
+      [workId]: validItems
     }));
   };
 
   const loadWorkPaymentRecords = async (workId: string) => {
-    const { data, error } = await supabase
-      .from('customer_revenue')
-      .select('id, origin_id, total_amount, paid_amount, balance, payment_date, payment_amount, payment_method, notes, receipt_number, origin_description, created_at')
-      .eq('origin_type', 'construction_work')
-      .eq('origin_id', workId)
-      .order('payment_date', { ascending: false });
+    const [{ data: revenueData, error: revenueError }, { data: cfData, error: cfError }] = await Promise.all([
+      supabase
+        .from('customer_revenue')
+        .select('id, origin_id, total_amount, paid_amount, balance, payment_date, payment_amount, payment_method, notes, receipt_number, origin_description, created_at')
+        .eq('origin_type', 'construction_work')
+        .eq('origin_id', workId)
+        .order('payment_date', { ascending: false }),
+      supabase
+        .from('cash_flow')
+        .select('id, date, amount, notes, reference, created_at, description')
+        .eq('construction_work_id', workId)
+        .eq('type', 'income')
+        .is('customer_revenue_id', null)
+        .order('date', { ascending: false }),
+    ]);
 
-    if (error) {
-      console.error('Error loading payment records:', error);
-      return;
-    }
+    if (revenueError) console.error('Error loading revenue records:', revenueError);
+    if (cfError) console.error('Error loading cashflow income records:', cfError);
+
+    const fromRevenue: WorkPaymentRecord[] = (revenueData || []).map(r => ({ ...r, source: 'revenue' as const }));
+    const fromCashFlow: WorkPaymentRecord[] = (cfData || []).map(cf => ({
+      id: cf.id,
+      origin_id: workId,
+      total_amount: 0,
+      paid_amount: 0,
+      balance: 0,
+      payment_date: cf.date,
+      payment_amount: Number(cf.amount),
+      payment_method: '',
+      notes: cf.notes || '',
+      receipt_number: cf.reference || '',
+      origin_description: cf.description || '',
+      created_at: cf.created_at,
+      source: 'cashflow' as const,
+    }));
+
+    const all = [...fromRevenue, ...fromCashFlow].sort(
+      (a, b) => new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime()
+    );
 
     setWorkPaymentRecords(prev => ({
       ...prev,
-      [workId]: data || []
+      [workId]: all,
     }));
   };
 
@@ -991,17 +1026,26 @@ export default function ConstructionProjects() {
                                       <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <span className="font-semibold text-green-700 text-lg">
-                                            R$ {Number(payment.payment_amount).toFixed(2)}
+                                            R$ {Number(payment.payment_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                           </span>
-                                          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
-                                            {PAYMENT_METHOD_LABELS[payment.payment_method] || payment.payment_method}
-                                          </span>
+                                          {payment.payment_method && (
+                                            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                                              {PAYMENT_METHOD_LABELS[payment.payment_method] || payment.payment_method}
+                                            </span>
+                                          )}
+                                          {payment.source === 'cashflow' && (
+                                            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                                              Receitas/Despesas
+                                            </span>
+                                          )}
                                           {payment.receipt_number && (
                                             <span className="text-xs text-gray-400">#{payment.receipt_number}</span>
                                           )}
                                         </div>
                                         <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
-                                          <span>{new Date(payment.payment_date).toLocaleDateString('pt-BR')}</span>
+                                          <span className="font-medium text-gray-600">
+                                            {new Date(payment.payment_date + 'T12:00:00').toLocaleDateString('pt-BR')}
+                                          </span>
                                           {payment.origin_description && (
                                             <span className="truncate max-w-xs">{payment.origin_description}</span>
                                           )}
@@ -1012,20 +1056,24 @@ export default function ConstructionProjects() {
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                                      <button
-                                        onClick={() => handleOpenPaymentModal(work.id, payment)}
-                                        className="p-1.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
-                                        title="Editar pagamento"
-                                      >
-                                        <Edit2 className="h-3.5 w-3.5" />
-                                      </button>
-                                      <button
-                                        onClick={() => handleDeletePayment(payment.id, work.id)}
-                                        className="p-1.5 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
-                                        title="Excluir pagamento"
-                                      >
-                                        <Trash2 className="h-3.5 w-3.5" />
-                                      </button>
+                                      {payment.source !== 'cashflow' && (
+                                        <>
+                                          <button
+                                            onClick={() => handleOpenPaymentModal(work.id, payment)}
+                                            className="p-1.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+                                            title="Editar pagamento"
+                                          >
+                                            <Edit2 className="h-3.5 w-3.5" />
+                                          </button>
+                                          <button
+                                            onClick={() => handleDeletePayment(payment.id, work.id)}
+                                            className="p-1.5 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                                            title="Excluir pagamento"
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                          </button>
+                                        </>
+                                      )}
                                     </div>
                                   </div>
                                 ))}

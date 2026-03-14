@@ -815,8 +815,12 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
 
       console.log('Itens do orçamento:', quoteItems);
 
+      const VALID_WORK_ITEM_TYPES = ['product', 'material', 'composition', 'service'];
+
       if (quoteItems && quoteItems.length > 0) {
-        const workItems = quoteItems.map(item => {
+        const workItems = quoteItems
+          .filter(item => VALID_WORK_ITEM_TYPES.includes(item.item_type))
+          .map(item => {
           let itemName = 'Item sem nome';
           let itemUnit = '';
           let productId = null;
@@ -838,8 +842,8 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
           } else if (item.item_type === 'composition' && composition) {
             itemName = composition.name || 'Composição sem nome';
             itemUnit = 'un';
-          } else if (item.item_type === 'mao_de_obra') {
-            itemName = item.item_name || item.notes || 'Serviço de Mão de Obra';
+          } else if (item.item_type === 'service') {
+            itemName = item.item_name || item.notes || 'Serviço';
             itemUnit = 'un';
             compositionId = item.composition_id;
           }
