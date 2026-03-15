@@ -230,6 +230,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
       const itemsToInsert = quoteItems.map((qi: any) => {
         const product = Array.isArray(qi.products) ? qi.products[0] : qi.products;
         const material = Array.isArray(qi.materials) ? qi.materials[0] : qi.materials;
+        const qty = parseFloat(String(qi.quantity)) || 0;
         return {
           production_order_id: order.id,
           quote_item_id: qi.id,
@@ -237,9 +238,9 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
           product_id: qi.item_type === 'product' ? (product?.id || qi.product_id) : null,
           material_id: qi.item_type === 'material' ? (material?.id || qi.material_id) : null,
           composition_id: qi.item_type === 'composition' ? qi.composition_id : null,
-          quantity: Number(qi.quantity),
+          quantity: qty,
           produced_quantity: 0,
-          unit_price: Number(qi.proposed_price) || 0,
+          unit_price: parseFloat(String(qi.proposed_price)) || 0,
           notes: 'Sincronizado automaticamente do orcamento',
         };
       });

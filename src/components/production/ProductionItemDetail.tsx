@@ -325,7 +325,8 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
   };
 
   const handleGenerateSubOrders = async () => {
-    if (!confirm(`Gerar ${item.quantity} sub-ordens com QR codes individuais para esta peca?`)) return;
+    const totalPieces = Math.max(1, Math.round(parseFloat(String(item.quantity)) || 1));
+    if (!confirm(`Gerar ${totalPieces} sub-ordens com QR codes individuais para esta peca?`)) return;
     setGeneratingSubOrders(true);
     try {
       const { data: existing } = await supabase
@@ -341,11 +342,12 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
         if (delError) throw delError;
       }
 
-      const toInsert = Array.from({ length: item.quantity }, (_, i) => ({
+      const pieceCount = Math.max(1, Math.round(parseFloat(String(item.quantity)) || 1));
+      const toInsert = Array.from({ length: pieceCount }, (_, i) => ({
         production_order_id: order.id,
         production_order_item_id: item.id,
         sequence_number: i + 1,
-        total_in_item: item.quantity,
+        total_in_item: pieceCount,
         qr_token: `${crypto.randomUUID()}-${Date.now()}-${i}`,
         status: 'pending',
       }));
