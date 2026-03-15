@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import {
   ArrowLeft, Layers, Package, BarChart2, Settings, Edit2, Save, X,
-  Brain, TrendingUp, SlidersHorizontal, CheckCircle2, Circle
+  Brain, TrendingUp, SlidersHorizontal, CheckCircle2, Circle, ListChecks
 } from 'lucide-react';
 import { Budget, WBSStep, BUDGET_TYPE_CONFIG, STATUS_CONFIG, fmtBRL } from './types';
 import BudgetElementsPanel from './BudgetElementsPanel';
@@ -12,8 +12,9 @@ import BudgetCompositionsPanel from './BudgetCompositionsPanel';
 import QuantitativeSummaryPanel from './QuantitativeSummaryPanel';
 import FloorPlanIAPanel from './FloorPlanIAPanel';
 import BudgetGlobalParamsPanel from './BudgetGlobalParamsPanel';
+import BudgetStagesPanel from './BudgetStagesPanel';
 
-type Tab = 'parametros' | 'elements' | 'compositions' | 'items' | 'quantitativos' | 'ia' | 'report';
+type Tab = 'parametros' | 'elements' | 'compositions' | 'items' | 'quantitativos' | 'ia' | 'report' | 'stages';
 
 interface Props {
   budget: Budget;
@@ -74,7 +75,8 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
 
   const tabs: { id: Tab; label: string; icon: React.ComponentType<any>; highlight?: boolean; step?: number }[] = [
     { id: 'parametros', label: 'Parametros', icon: SlidersHorizontal, step: 1 },
-    { id: 'elements', label: 'Etapas', icon: Layers, step: 2 },
+    { id: 'elements', label: 'Levantamento', icon: Layers, step: 2 },
+    { id: 'stages', label: 'Etapas da Obra', icon: ListChecks },
     { id: 'compositions', label: 'Composicoes', icon: Settings },
     { id: 'items', label: 'Itens', icon: Package, step: 3 },
     { id: 'quantitativos', label: 'Quantitativos', icon: TrendingUp },
@@ -219,6 +221,9 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
           )}
           {activeTab === 'elements' && (
             <BudgetElementsPanel budget={budget} wbsSteps={wbsSteps} onRefresh={refreshBudget} />
+          )}
+          {activeTab === 'stages' && (
+            <BudgetStagesPanel budget={budget} />
           )}
           {activeTab === 'compositions' && (
             <BudgetCompositionsPanel />
