@@ -214,36 +214,105 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
       alert('Esta ordem nao esta vinculada a um orcamento.');
       return;
     }
+
+    const existingItems = order.production_order_items || [];
+    const hasProduced = existingItems.some(i => toNum(i.produced_quantity) > 0);
+    if (existingItems.length > 0) {
+      const msg = hasProduced
+        ? `Esta OP ja possui ${existingItems.length} item(ns), sendo que alguns ja foram produzidos. Deseja limpar e re-sincronizar apenas os itens sem producao registrada?`
+        : `Esta OP ja possui ${existingItems.length} item(ns). Deseja limpar e re-sincronizar do orcamento?`;
+      if (!confirm(msg)) return;
+    }
+
     setSyncingOrderId(order.id);
     try {
       const { data: quoteItems } = await supabase
         .from('quote_items')
-        .select('*, products(id, name, unit), materials(id, name, unit), compositions(id, name)')
+        .select('*, products(id, name, unit), compositions(id, name)')
         .eq('quote_id', order.quote_id)
-        .in('item_type', ['product', 'material', 'composition']);
+        .in('item_type', ['product', 'composition']);
 
       if (!quoteItems || quoteItems.length === 0) {
-        alert('Nenhum item encontrado no orcamento vinculado.');
+        alert('Nenhum produto encontrado no orcamento vinculado.');
         return;
       }
 
-      const itemsToInsert = quoteItems.map((qi: any) => {
-        const product = Array.isArray(qi.products) ? qi.products[0] : qi.products;
-        const material = Array.isArray(qi.materials) ? qi.materials[0] : qi.materials;
-        const qty = parseFloat(String(qi.quantity)) || 0;
-        return {
-          production_order_id: order.id,
-          quote_item_id: qi.id,
-          item_type: qi.item_type,
-          product_id: qi.item_type === 'product' ? (product?.id || qi.product_id) : null,
-          material_id: qi.item_type === 'material' ? (material?.id || qi.material_id) : null,
-          composition_id: qi.item_type === 'composition' ? qi.composition_id : null,
-          quantity: qty,
-          produced_quantity: 0,
-          unit_price: parseFloat(String(qi.proposed_price)) || 0,
-          notes: 'Sincronizado automaticamente do orcamento',
-        };
-      });
+      const compositionIds = quoteItems
+        .filter((qi: any) => qi.item_type === 'composition' && qi.composition_id)
+        .map((qi: any) => qi.composition_id);
+
+      let compositionItemsMap = new Map<string, any[]>();
+      if (compositionIds.length > 0) {
+        const { data: compItems } = await supabase
+          .from('composition_items')
+          .select('*, products(id, name, unit)')
+          .in('composition_id', compositionIds)
+          .eq('item_type', 'product');
+
+        (compItems || []).forEach((ci: any) => {
+          if (!compositionItemsMap.has(ci.composition_id)) {
+            compositionItemsMap.set(ci.composition_id, []);
+          }
+          compositionItemsMap.get(ci.composition_id)!.push(ci);
+        });
+      }
+
+      const itemsToInsert: any[] = [];
+
+      for (const qi of quoteItems) {
+        const quoteQty = parseFloat(String(qi.quantity)) || 0;
+
+        if (qi.item_type === 'product') {
+          const product = Array.isArray(qi.products) ? qi.products[0] : qi.products;
+          itemsToInsert.push({
+            production_order_id: order.id,
+            quote_item_id: qi.id,
+            item_type: 'product',
+            product_id: product?.id || qi.product_id,
+            material_id: null,
+            composition_id: null,
+            quantity: quoteQty,
+            produced_quantity: 0,
+            unit_price: parseFloat(String(qi.proposed_price)) || 0,
+            notes: 'Sincronizado automaticamente do orcamento',
+          });
+        } else if (qi.item_type === 'composition' && qi.composition_id) {
+          const subItems = compositionItemsMap.get(qi.composition_id) || [];
+          for (const ci of subItems) {
+            const product = Array.isArray(ci.products) ? ci.products[0] : ci.products;
+            if (!product?.id) continue;
+            const subQty = quoteQty * (parseFloat(String(ci.quantity)) || 1);
+            itemsToInsert.push({
+              production_order_id: order.id,
+              quote_item_id: qi.id,
+              item_type: 'product',
+              product_id: product.id,
+              material_id: null,
+              composition_id: null,
+              quantity: subQty,
+              produced_quantity: 0,
+              unit_price: parseFloat(String(ci.unit_price)) || 0,
+              notes: `Composicao: ${qi.compositions?.name || 'Sem nome'}`,
+            });
+          }
+        }
+      }
+
+      if (itemsToInsert.length === 0) {
+        alert('Nenhum produto para producao encontrado no orcamento (itens do tipo insumo/servico sao ignorados).');
+        return;
+      }
+
+      const itemsToDelete = hasProduced
+        ? existingItems.filter(i => toNum(i.produced_quantity) === 0).map(i => i.id)
+        : existingItems.map(i => i.id);
+
+      if (itemsToDelete.length > 0) {
+        await supabase
+          .from('production_order_items')
+          .delete()
+          .in('id', itemsToDelete);
+      }
 
       const { error } = await supabase
         .from('production_order_items')
