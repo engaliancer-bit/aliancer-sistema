@@ -46,6 +46,7 @@ const ConstructionProjects = lazy(() => import('./components/ConstructionProject
 const ConstructionFinance = lazy(() => import('./components/ConstructionFinance'));
 const ConstructionBudgets = lazy(() => import('./components/construction/ConstructionBudgets'));
 const PaymentAudit = lazy(() => import('./components/PaymentAudit'));
+const AssemblyStructure = lazy(() => import('./components/assembly/AssemblyStructure'));
 const Properties = lazy(() => import('./components/Properties'));
 const CompanySettings = lazy(() => import('./components/CompanySettings'));
 const ModuleSharing = lazy(() => import('./components/ModuleSharing'));
@@ -56,7 +57,7 @@ const EngineeringMeetings = lazy(() => import('./components/EngineeringMeetings'
 type MainTab = 'factory' | 'engineering' | 'construction' | 'sales' | 'settings' | 'sharing';
 type FactoryTab = 'products' | 'molds' | 'production' | 'inventory' | 'materials' | 'material-inventory' | 'recipes' | 'suppliers' | 'employees' | 'indirect-costs' | 'sales-report' | 'dashboard' | 'sales-prices' | 'customers' | 'quotes' | 'production-orders' | 'production-pending' | 'compositions' | 'ribbed-slab-quote' | 'stage-tracker' | 'cashflow' | 'deliveries';
 type EngineeringTab = 'eng-customers' | 'eng-properties' | 'eng-projects' | 'eng-services' | 'eng-employees' | 'eng-ai-docs' | 'eng-finance' | 'eng-meetings';
-type ConstructionTab = 'const-customers' | 'const-projects' | 'const-finance' | 'const-budgets' | 'const-audit';
+type ConstructionTab = 'const-customers' | 'const-projects' | 'const-finance' | 'const-budgets' | 'const-audit' | 'const-assembly';
 
 const mainTabs = [
   { id: 'factory' as MainTab, label: 'Indústria de Artefatos e Pré-Moldados', icon: Package, color: 'from-blue-500 to-blue-600' },
@@ -107,6 +108,7 @@ const constructionTabs = [
   { id: 'const-customers' as ConstructionTab, label: 'Clientes', icon: UserPlus },
   { id: 'const-budgets' as ConstructionTab, label: 'Orcamentos', icon: FileSpreadsheet },
   { id: 'const-projects' as ConstructionTab, label: 'Obras', icon: HardHat },
+  { id: 'const-assembly' as ConstructionTab, label: 'Montagem de Estrutura', icon: Layers },
   { id: 'const-finance' as ConstructionTab, label: 'Financeiro', icon: DollarSign },
   { id: 'const-audit' as ConstructionTab, label: 'Auditoria de Pagamentos', icon: ShieldCheck },
 ];
@@ -774,6 +776,7 @@ function App() {
                 {constructionTab === 'const-customers' && <Customers />}
                 {constructionTab === 'const-budgets' && <ConstructionBudgets />}
                 {constructionTab === 'const-projects' && <ConstructionProjects />}
+                {constructionTab === 'const-assembly' && <AssemblyStructure />}
                 {constructionTab === 'const-finance' && <ConstructionFinance />}
                 {constructionTab === 'const-audit' && <PaymentAudit />}
               </Suspense>
