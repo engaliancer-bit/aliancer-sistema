@@ -42,7 +42,7 @@ interface ProductionOrder {
 
 interface Reinforcement {
   id: string;
-  type: string;
+  reinforcement_type: string;
   material_id?: string;
   bar_count: number;
   bar_length_meters: number;
@@ -81,6 +81,7 @@ interface ProductDetail {
   has_flange?: boolean;
   flange_length_meters?: number;
   flange_volume_m3?: number;
+  reference_volume?: number;
   enable_stage_tracking?: boolean;
   recipes?: Recipe;
 }
@@ -192,7 +193,7 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
   const loadProduct = async (productId: string) => {
     const { data } = await supabase
       .from('products')
-      .select('*, recipes(id, name, concrete_type, specific_weight, moisture_percentage)')
+      .select('*, reference_volume, recipes(id, name, concrete_type, specific_weight, moisture_percentage)')
       .eq('id', productId)
       .maybeSingle();
 
@@ -212,7 +213,7 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
       .from('product_reinforcements')
       .select('*, materials(name, unit)')
       .eq('product_id', productId)
-      .order('type');
+      .order('reinforcement_type');
     setReinforcements(reinforcementsData || []);
 
     const { data: moldsData } = await supabase
@@ -353,15 +354,15 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
   }, [subOrders, itemName, order, recipe]);
 
   const groupedReinforcements = reinforcements.reduce<Record<string, Reinforcement[]>>((acc, r) => {
-    const key = r.type || 'other';
+    const key = r.reinforcement_type || 'other';
     if (!acc[key]) acc[key] = [];
     acc[key].push(r);
     return acc;
   }, {});
 
-  const totalConcreteVolume = mold?.reference_volume_m3
-    ? mold.reference_volume_m3 * item.quantity
-    : null;
+  const unitConcreteVolume = mold?.reference_volume_m3 || productDetail?.reference_volume || null;
+  const totalConcreteVolume = unitConcreteVolume ? unitConcreteVolume * item.quantity : null;
+  const volumeSource = mold?.reference_volume_m3 ? 'forma' : productDetail?.reference_volume ? 'produto' : null;
 
   const concreteTypeLabel = (type?: string) => {
     switch (type) {
@@ -514,6 +515,14 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
                               <div className="font-medium text-gray-800">{recipe.moisture_percentage}%</div>
                             </div>
                           )}
+                          {unitConcreteVolume && (
+                            <div>
+                              <div className="text-xs text-blue-600 mb-0.5">
+                                Vol. unit. ({volumeSource === 'forma' ? 'forma' : 'produto'})
+                              </div>
+                              <div className="font-medium text-gray-800">{unitConcreteVolume.toFixed(4)} m³</div>
+                            </div>
+                          )}
                           {totalConcreteVolume && (
                             <div>
                               <div className="text-xs text-blue-600 mb-0.5">Volume total ({item.quantity} pcs)</div>
@@ -521,6 +530,11 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
                             </div>
                           )}
                         </div>
+                        {!unitConcreteVolume && (
+                          <div className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
+                            Volume nao cadastrado na forma. Cadastre o volume de referencia na forma para calcular as quantidades totais de material.
+                          </div>
+                        )}
                       </div>
 
                       {recipeItems.length > 0 && (
@@ -534,7 +548,9 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
                                   <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Qtd./m³</th>
                                   <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Unidade</th>
                                   {totalConcreteVolume && (
-                                    <th className="text-right px-4 py-2.5 text-xs font-semibold text-blue-500">Qtd. Total</th>
+                                    <th className="text-right px-4 py-2.5 text-xs font-semibold text-blue-500">
+                                      Qtd. Total ({item.quantity} pcs)
+                                    </th>
                                   )}
                                 </tr>
                               </thead>
