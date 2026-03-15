@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, Package, AlertCircle, FileText, RefreshCw, CreditCard, CheckCircle, Clock, Banknote, Link } from 'lucide-react';
+import { Building2, Plus, X, Edit2, Trash2, Save, ChevronDown, ChevronRight, Calendar, MapPin, DollarSign, TrendingUp, TrendingDown, Package, AlertCircle, FileText, RefreshCw, CreditCard, CheckCircle, Clock, Banknote, Link } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useHorizontalKeyboardScroll } from '../hooks/useHorizontalKeyboardScroll';
 import ConstructionWorkStatement from './ConstructionWorkStatement';
@@ -38,8 +38,8 @@ interface Work {
 interface WorkItem {
   id: string;
   work_id: string;
-  quote_id: string;
-  quote_item_id: string;
+  quote_id: string | null;
+  quote_item_id: string | null;
   item_type: 'product' | 'material' | 'composition' | 'service';
   item_name: string;
   quantity: number;
@@ -51,6 +51,17 @@ interface WorkItem {
   material_id?: string;
   composition_id?: string;
   unit?: string;
+  source_type?: 'quote' | 'expense' | 'manual';
+  cash_flow_id?: string | null;
+  quotes?: {
+    created_at: string;
+    updated_at: string;
+    total_value: number;
+  } | null;
+  cash_flow?: {
+    date: string;
+    description: string;
+  } | null;
 }
 
 interface WorkPaymentRecord {
@@ -130,6 +141,7 @@ export default function ConstructionProjects() {
   const [availableQuotes, setAvailableQuotes] = useState<any[]>([]);
   const [selectedLinkQuoteId, setSelectedLinkQuoteId] = useState<string>('');
   const [linkingQuote, setLinkingQuote] = useState(false);
+  const [syncingExpenses, setSyncingExpenses] = useState<{ [key: string]: boolean }>({});
   const tableRef = useRef<HTMLDivElement>(null);
 
   useHorizontalKeyboardScroll(tableRef);
@@ -249,14 +261,18 @@ export default function ConstructionProjects() {
 
   const VALID_WORK_ITEM_TYPES = ['product', 'material', 'composition', 'service'] as const;
 
-  const loadWorkItems = async (workId: string) => {
-    if (workItems[workId]) {
+  const loadWorkItems = async (workId: string, forceReload = false) => {
+    if (workItems[workId] && !forceReload) {
       return;
     }
 
     const { data, error } = await supabase
       .from('construction_work_items')
-      .select('*')
+      .select(`
+        *,
+        quotes (created_at, updated_at, total_value),
+        cash_flow (date, description)
+      `)
       .eq('work_id', workId)
       .order('added_date', { ascending: false });
 
@@ -558,7 +574,8 @@ export default function ConstructionProjects() {
       unit_price: newItem.unit_price,
       total_price: totalPrice,
       unit: newItem.unit,
-      notes: newItem.notes
+      notes: newItem.notes,
+      source_type: 'manual',
     };
 
     if (newItem.item_type === 'product' && newItem.item_id) {
@@ -758,6 +775,7 @@ export default function ConstructionProjects() {
             material_id: materialId,
             composition_id: compositionId,
             notes: item.notes || null,
+            source_type: 'quote',
           };
         });
 
@@ -782,6 +800,69 @@ export default function ConstructionProjects() {
       alert('Erro ao vincular orçamento: ' + (err.message || 'Erro desconhecido'));
     } finally {
       setLinkingQuote(false);
+    }
+  };
+
+  const handleSyncExpensesToWorkItems = async (workId: string) => {
+    setSyncingExpenses(prev => ({ ...prev, [workId]: true }));
+    try {
+      const { data: expenses, error: expError } = await supabase
+        .from('cash_flow')
+        .select('id, date, description, amount, notes')
+        .eq('construction_work_id', workId)
+        .eq('type', 'expense')
+        .gte('date', '2026-01-01');
+
+      if (expError) throw expError;
+      if (!expenses || expenses.length === 0) {
+        alert('Nenhuma despesa vinculada a esta obra encontrada desde 01/01/2026.');
+        return;
+      }
+
+      const { data: existingItems, error: existError } = await supabase
+        .from('construction_work_items')
+        .select('cash_flow_id')
+        .eq('work_id', workId)
+        .not('cash_flow_id', 'is', null);
+
+      if (existError) throw existError;
+
+      const alreadySyncedIds = new Set((existingItems || []).map(i => i.cash_flow_id));
+      const toInsert = expenses.filter(e => !alreadySyncedIds.has(e.id));
+
+      if (toInsert.length === 0) {
+        alert('Todas as despesas desta obra já estão sincronizadas nos Itens da Obra.');
+        return;
+      }
+
+      const itemsToInsert = toInsert.map(expense => ({
+        work_id: workId,
+        item_type: 'service',
+        item_name: expense.description || 'Despesa sem descrição',
+        quantity: 1,
+        unit_price: Number(expense.amount),
+        total_price: Number(expense.amount),
+        unit: 'un',
+        notes: expense.notes || null,
+        cash_flow_id: expense.id,
+        source_type: 'expense',
+        added_date: expense.date,
+      }));
+
+      const { error: insertError } = await supabase
+        .from('construction_work_items')
+        .insert(itemsToInsert);
+
+      if (insertError) throw insertError;
+
+      delete workItems[workId];
+      await loadWorkItems(workId, true);
+      alert(`${toInsert.length} despesa(s) sincronizada(s) com sucesso nos Itens da Obra!`);
+    } catch (err: any) {
+      console.error('Erro ao sincronizar despesas:', err);
+      alert('Erro ao sincronizar despesas: ' + (err.message || 'Erro desconhecido'));
+    } finally {
+      setSyncingExpenses(prev => ({ ...prev, [workId]: false }));
     }
   };
 
@@ -1233,6 +1314,15 @@ export default function ConstructionProjects() {
                               </div>
                               <div className="flex items-center gap-2">
                                 <button
+                                  onClick={() => handleSyncExpensesToWorkItems(work.id)}
+                                  disabled={syncingExpenses[work.id]}
+                                  className="flex items-center gap-1 px-3 py-1.5 bg-orange-500 text-white text-sm rounded-lg hover:bg-orange-600 transition-colors disabled:opacity-60"
+                                  title="Sincronizar despesas vinculadas a esta obra como itens"
+                                >
+                                  <RefreshCw className={`h-4 w-4 ${syncingExpenses[work.id] ? 'animate-spin' : ''}`} />
+                                  {syncingExpenses[work.id] ? 'Sincronizando...' : 'Sincronizar Despesas'}
+                                </button>
+                                <button
                                   onClick={() => handleOpenLinkQuoteModal(work.id, work.customer_id)}
                                   className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors"
                                   title="Vincular orçamento aprovado a esta obra"
@@ -1265,31 +1355,62 @@ export default function ConstructionProjects() {
                               </div>
                             ) : (
                               <div className="divide-y divide-gray-100">
-                                {workItems[work.id].map((item) => (
-                                  <div key={item.id} className="flex items-center justify-between px-4 py-3 hover:bg-blue-50 transition-colors">
-                                    <div className="flex-1">
-                                      <div className="font-medium text-gray-900">{item.item_name}</div>
-                                      <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
-                                        <span className="px-2 py-0.5 bg-gray-100 rounded-full">{getItemTypeLabel(item.item_type)}</span>
-                                        <span>Qtd: {item.quantity}{item.unit ? ` ${item.unit}` : ''}</span>
-                                        <span>Unit: R$ {item.unit_price.toFixed(2)}</span>
-                                        {item.notes && <span className="italic text-gray-400">{item.notes}</span>}
+                                {workItems[work.id].map((item) => {
+                                  const srcType = item.source_type || (item.quote_id ? 'quote' : 'manual');
+                                  let sourceBadge = null;
+                                  if (srcType === 'quote' && item.quotes) {
+                                    const approvalDate = new Date(item.quotes.updated_at).toLocaleDateString('pt-BR');
+                                    const quoteRef = item.quote_id ? item.quote_id.slice(0, 8).toUpperCase() : '';
+                                    sourceBadge = (
+                                      <span className="flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                                        <FileText className="h-3 w-3" />
+                                        ORC-{quoteRef} &bull; Aprov. {approvalDate}
+                                      </span>
+                                    );
+                                  } else if (srcType === 'expense') {
+                                    const expDate = item.cash_flow
+                                      ? new Date(item.cash_flow.date).toLocaleDateString('pt-BR')
+                                      : item.added_date ? new Date(item.added_date).toLocaleDateString('pt-BR') : '';
+                                    sourceBadge = (
+                                      <span className="flex items-center gap-1 px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-xs font-medium">
+                                        <TrendingDown className="h-3 w-3" />
+                                        Despesa &bull; {expDate}
+                                      </span>
+                                    );
+                                  } else {
+                                    sourceBadge = (
+                                      <span className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full text-xs">
+                                        Manual
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <div key={item.id} className="flex items-center justify-between px-4 py-3 hover:bg-blue-50 transition-colors">
+                                      <div className="flex-1">
+                                        <div className="font-medium text-gray-900">{item.item_name}</div>
+                                        <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-gray-500">
+                                          <span className="px-2 py-0.5 bg-gray-100 rounded-full">{getItemTypeLabel(item.item_type)}</span>
+                                          {sourceBadge}
+                                          <span>Qtd: {item.quantity}{item.unit ? ` ${item.unit}` : ''}</span>
+                                          <span>Unit: R$ {item.unit_price.toFixed(2)}</span>
+                                          {item.notes && <span className="italic text-gray-400">{item.notes}</span>}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-3 ml-4 flex-shrink-0">
+                                        <span className="font-semibold text-blue-700 text-base">
+                                          R$ {item.total_price.toFixed(2)}
+                                        </span>
+                                        <button
+                                          onClick={() => handleDeleteItem(item.id, work.id)}
+                                          className="p-1.5 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
+                                          title="Excluir item"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
                                       </div>
                                     </div>
-                                    <div className="flex items-center gap-3 ml-4 flex-shrink-0">
-                                      <span className="font-semibold text-blue-700 text-base">
-                                        R$ {item.total_price.toFixed(2)}
-                                      </span>
-                                      <button
-                                        onClick={() => handleDeleteItem(item.id, work.id)}
-                                        className="p-1.5 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
-                                        title="Excluir item"
-                                      >
-                                        <Trash2 className="h-3.5 w-3.5" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
 
                                 {/* Totals footer */}
                                 <div className="px-4 py-3 bg-blue-50 flex items-center justify-between text-sm">

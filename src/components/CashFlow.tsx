@@ -540,12 +540,50 @@ export default function CashFlow({ businessUnit = 'factory' }: CashFlowProps) {
           .eq('id', editingEntry.id);
 
         if (error) throw error;
+
+        if (entryData.construction_work_id) {
+          await supabase
+            .from('construction_work_items')
+            .upsert({
+              work_id: entryData.construction_work_id,
+              cash_flow_id: editingEntry.id,
+              item_type: 'service',
+              item_name: entryData.description,
+              quantity: 1,
+              unit_price: entryData.amount,
+              total_price: entryData.amount,
+              unit: 'un',
+              notes: entryData.notes || null,
+              source_type: 'expense',
+              added_date: entryData.date,
+            }, { onConflict: 'cash_flow_id', ignoreDuplicates: false });
+        }
       } else {
-        const { error } = await supabase
+        const { data: inserted, error } = await supabase
           .from('cash_flow')
-          .insert(entryData);
+          .insert(entryData)
+          .select('id')
+          .single();
 
         if (error) throw error;
+
+        if (entryData.construction_work_id && inserted?.id) {
+          await supabase
+            .from('construction_work_items')
+            .insert({
+              work_id: entryData.construction_work_id,
+              cash_flow_id: inserted.id,
+              item_type: 'service',
+              item_name: entryData.description,
+              quantity: 1,
+              unit_price: entryData.amount,
+              total_price: entryData.amount,
+              unit: 'un',
+              notes: entryData.notes || null,
+              source_type: 'expense',
+              added_date: entryData.date,
+            });
+        }
       }
 
       resetForm();
@@ -594,7 +632,6 @@ export default function CashFlow({ businessUnit = 'factory' }: CashFlowProps) {
 
         loadXMLExpenses();
       } else {
-        // Deletar apenas o registro individual
         const { error } = await supabase.from('cash_flow').delete().eq('id', entry.id);
         if (error) throw error;
 
