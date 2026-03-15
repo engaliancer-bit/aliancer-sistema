@@ -12,6 +12,7 @@ interface ProductionLabelProps {
     orderNumber?: number;
     customerName?: string;
     qrToken: string;
+    sequenceInfo?: string;
   };
   onClose: () => void;
 }
@@ -167,6 +168,11 @@ export default function ProductionLabel({ productionData, onClose }: ProductionL
               <span class="info-label">${productionData.customerName ? 'Cliente' : 'Destino'}</span>
               <span class="info-value">${productionData.customerName || 'Reposição de Estoque'}</span>
             </div>
+            ${productionData.sequenceInfo ? `
+            <div class="info" style="background:#0A7EC2;border-radius:3px;padding:0.05cm 0.1cm;">
+              <span class="info-value" style="color:#fff;font-weight:bold;font-size:8pt;">${productionData.sequenceInfo}</span>
+            </div>
+            ` : ''}
             <div class="divider"></div>
             <img src="${qrCodeUrl}" alt="QR Code" class="qr-code">
             <script>
@@ -300,6 +306,14 @@ export default function ProductionLabel({ productionData, onClose }: ProductionL
                 {productionData.customerName || 'Reposição de Estoque'}
               </span>
             </div>
+
+            {productionData.sequenceInfo && (
+              <div style={{ width: '100%', textAlign: 'center', background: '#0A7EC2', borderRadius: '3px', padding: '0.05cm 0.1cm', flexShrink: 0, marginBottom: '0.03cm' }}>
+                <span style={{ fontWeight: 'bold', fontSize: '8pt', color: '#fff', display: 'block', lineHeight: 1.2 }}>
+                  {productionData.sequenceInfo}
+                </span>
+              </div>
+            )}
 
             <div className="divider" style={{ width: '100%', height: '1px', background: '#ddd', margin: '0.05cm 0', flexShrink: 0 }} />
 
