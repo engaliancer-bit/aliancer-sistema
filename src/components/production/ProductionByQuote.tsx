@@ -15,8 +15,8 @@ interface ProductionOrderItem {
   product_id?: string;
   material_id?: string;
   composition_id?: string;
-  quantity: number;
-  produced_quantity: number;
+  quantity: number | string;
+  produced_quantity: number | string;
   unit_price: number;
   notes?: string;
   products?: { name: string; unit: string };
@@ -30,9 +30,9 @@ interface ProductionOrder {
   quote_id?: string;
   customer_id: string | null;
   product_id: string;
-  total_quantity: number;
-  produced_quantity: number;
-  remaining_quantity: number;
+  total_quantity: number | string;
+  produced_quantity: number | string;
+  remaining_quantity: number | string;
   status: 'open' | 'in_progress' | 'completed' | 'cancelled';
   notes: string;
   deadline?: string | null;
@@ -63,6 +63,17 @@ interface Props {
   refreshKey: number;
 }
 
+const toNum = (v: number | string | undefined | null): number => {
+  if (v === undefined || v === null) return 0;
+  const n = typeof v === 'string' ? parseFloat(v) : v;
+  return isNaN(n) ? 0 : n;
+};
+
+const fmtQty = (v: number | string | undefined | null): string => {
+  const n = toNum(v);
+  return n % 1 === 0 ? String(n) : n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+};
+
 export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refreshKey }: Props) {
   const [groups, setGroups] = useState<QuoteGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,7 +87,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
   const [productSearch, setProductSearch] = useState('');
   const [productOptions, setProductOptions] = useState<ProductOption[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<ProductOption | null>(null);
-  const [addQuantity, setAddQuantity] = useState(1);
+  const [addQuantity, setAddQuantity] = useState<number>(1);
   const [addingItem, setAddingItem] = useState(false);
 
   useEffect(() => {
@@ -173,8 +184,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
   };
 
   const getGroupProgress = (group: QuoteGroup) => {
-    const total = group.orders.reduce((s, o) => s + o.total_quantity, 0);
-    const done = group.orders.reduce((s, o) => s + o.produced_quantity, 0);
+    const total = group.orders.reduce((s, o) => s + toNum(o.total_quantity), 0);
+    const done = group.orders.reduce((s, o) => s + toNum(o.produced_quantity), 0);
     return total === 0 ? 0 : Math.round((done / total) * 100);
   };
 
@@ -239,7 +250,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
 
       if (error) throw error;
 
-      const totalQty = itemsToInsert.reduce((s: number, i: any) => s + i.quantity, 0);
+      const totalQty = itemsToInsert.reduce((s: number, i: any) => s + toNum(i.quantity), 0);
       await supabase
         .from('production_orders')
         .update({ total_quantity: totalQty, remaining_quantity: totalQty })
@@ -264,8 +275,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         .eq('id', item.id);
       if (error) throw error;
 
-      const newTotal = Math.max(0, order.total_quantity - item.quantity);
-      const newRemaining = Math.max(0, (order.remaining_quantity || 0) - item.quantity + item.produced_quantity);
+      const newTotal = Math.max(0, toNum(order.total_quantity) - toNum(item.quantity));
+      const newRemaining = Math.max(0, toNum(order.remaining_quantity) - toNum(item.quantity) + toNum(item.produced_quantity));
       await supabase
         .from('production_orders')
         .update({ total_quantity: newTotal, remaining_quantity: newRemaining })
@@ -319,8 +330,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         });
       if (error) throw error;
 
-      const newTotal = addItemModal.order.total_quantity + addQuantity;
-      const newRemaining = (addItemModal.order.remaining_quantity || 0) + addQuantity;
+      const newTotal = toNum(addItemModal.order.total_quantity) + addQuantity;
+      const newRemaining = toNum(addItemModal.order.remaining_quantity) + addQuantity;
       await supabase
         .from('production_orders')
         .update({ total_quantity: newTotal, remaining_quantity: newRemaining })
@@ -427,9 +438,9 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         y += 4;
       }
       const totalProgress = getGroupProgress(group);
-      const totalPecas = group.orders.reduce((s, o) => s + o.total_quantity, 0);
-      const produzidas = group.orders.reduce((s, o) => s + o.produced_quantity, 0);
-      doc.text(`Progresso geral: ${produzidas}/${totalPecas} (${totalProgress}%)   |   Total de ordens: ${group.orders.length}`, 14, y);
+      const totalPecas = group.orders.reduce((s, o) => s + toNum(o.total_quantity), 0);
+      const produzidas = group.orders.reduce((s, o) => s + toNum(o.produced_quantity), 0);
+      doc.text(`Progresso geral: ${fmtQty(produzidas)}/${fmtQty(totalPecas)} (${totalProgress}%)   |   Total de ordens: ${group.orders.length}`, 14, y);
       y += 4;
       doc.text(`Gerado em: ${new Date().toLocaleString('pt-BR')}`, 14, y);
       y += 6;
@@ -450,8 +461,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         doc.setFontSize(8);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(80, 80, 80);
-        const orderProg = order.total_quantity === 0 ? 0 : Math.round((order.produced_quantity / order.total_quantity) * 100);
-        doc.text(`Progresso: ${order.produced_quantity}/${order.total_quantity} (${orderProg}%)`, 14, y);
+        const orderProg = toNum(order.total_quantity) === 0 ? 0 : Math.round((toNum(order.produced_quantity) / toNum(order.total_quantity)) * 100);
+        doc.text(`Progresso: ${fmtQty(order.produced_quantity)}/${fmtQty(order.total_quantity)} (${orderProg}%)`, 14, y);
         if (order.deadline) {
           doc.text(`Prazo: ${new Date(order.deadline + 'T00:00:00').toLocaleDateString('pt-BR')}`, 100, y);
         }
@@ -470,7 +481,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
 
           const iname = item.products?.name || item.materials?.name || item.compositions?.name || 'Item';
           const iunit = item.products?.unit || item.materials?.unit || 'un';
-          const itemProg = item.quantity === 0 ? 0 : Math.round((item.produced_quantity / item.quantity) * 100);
+          const itemProg = toNum(item.quantity) === 0 ? 0 : Math.round((toNum(item.produced_quantity) / toNum(item.quantity)) * 100);
 
           doc.setFontSize(9);
           doc.setFont('helvetica', 'bold');
@@ -506,7 +517,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
             }
 
             const unitVol = moldData?.reference_volume_m3 || productData?.reference_volume || null;
-            const totalVol = unitVol ? unitVol * item.quantity : null;
+            const totalVol = unitVol ? unitVol * toNum(item.quantity) : null;
 
             const dimParts: string[] = [];
             if (moldData?.section_width_meters) dimParts.push(`Larg: ${(moldData.section_width_meters * 100).toFixed(0)} cm`);
@@ -526,8 +537,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               startY: y,
               head: [['Qtd. Solicitada', 'Qtd. Produzida', 'Progresso', 'Volume Total Concreto']],
               body: [[
-                `${item.quantity} ${iunit}`,
-                `${item.produced_quantity} ${iunit}`,
+                `${fmtQty(item.quantity)} ${iunit}`,
+                `${fmtQty(item.produced_quantity)} ${iunit}`,
                 `${itemProg}%`,
                 totalVol ? `${totalVol.toFixed(3)} m³` : 'Nao cadastrado',
               ]],
@@ -553,7 +564,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               });
               autoTable(doc, {
                 startY: y,
-                head: [['Material', 'Qtd./m³', 'Unidade', `Qtd. Total (${item.quantity} pcs)`]],
+                head: [['Material', 'Qtd./m³', 'Unidade', `Qtd. Total (${fmtQty(item.quantity)} pcs)`]],
                 body: recipeRows,
                 theme: 'grid',
                 headStyles: { fillColor: [230, 245, 255], textColor: [10, 80, 140], fontSize: 7, fontStyle: 'bold' },
@@ -579,12 +590,12 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                   String(r.bar_count),
                   `${r.bar_length_meters.toFixed(2)} m`,
                   `${totalBar.toFixed(2)} m`,
-                  `${(totalBar * item.quantity).toFixed(2)} m`,
+                  `${(totalBar * toNum(item.quantity)).toFixed(2)} m`,
                 ];
               });
               autoTable(doc, {
                 startY: y,
-                head: [['Aco / Material', 'Diam.', 'Barras', 'Comp./Barra', 'Total/peca', `Total (${item.quantity} pcs)`]],
+                head: [['Aco / Material', 'Diam.', 'Barras', 'Comp./Barra', 'Total/peca', `Total (${fmtQty(item.quantity)} pcs)`]],
                 body: renfRows,
                 theme: 'grid',
                 headStyles: { fillColor: [255, 247, 230], textColor: [140, 80, 10], fontSize: 7, fontStyle: 'bold' },
@@ -606,7 +617,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
             doc.setFont('helvetica', 'normal');
             doc.setFontSize(8);
             doc.setTextColor(80, 80, 80);
-            doc.text(`Qtd: ${item.quantity} ${iunit}  |  Produzido: ${item.produced_quantity} ${iunit}  |  ${itemProg}%`, 18, y);
+            doc.text(`Qtd: ${fmtQty(item.quantity)} ${iunit}  |  Produzido: ${fmtQty(item.produced_quantity)} ${iunit}  |  ${itemProg}%`, 18, y);
             y += 5;
           }
 
@@ -698,10 +709,10 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         doc.text(`Prazo de entrega: ${new Date(group.deadline + 'T00:00:00').toLocaleDateString('pt-BR')}`, 14, y);
         y += 5;
       }
-      const totalPecas = group.orders.reduce((s, o) => s + o.total_quantity, 0);
-      const produzidas = group.orders.reduce((s, o) => s + o.produced_quantity, 0);
+      const totalPecas = group.orders.reduce((s, o) => s + toNum(o.total_quantity), 0);
+      const produzidas = group.orders.reduce((s, o) => s + toNum(o.produced_quantity), 0);
       const prog = totalPecas === 0 ? 0 : Math.round((produzidas / totalPecas) * 100);
-      doc.text(`Total de pecas: ${totalPecas}  |  Produzidas: ${produzidas} (${prog}%)  |  Emitido em: ${new Date().toLocaleString('pt-BR')}`, 14, y);
+      doc.text(`Total de pecas: ${fmtQty(totalPecas)}  |  Produzidas: ${fmtQty(produzidas)} (${prog}%)  |  Emitido em: ${new Date().toLocaleString('pt-BR')}`, 14, y);
       y += 8;
 
       doc.setDrawColor(10, 126, 194);
@@ -737,7 +748,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
           doc.setFontSize(8);
           doc.setFont('helvetica', 'normal');
           doc.setTextColor(80, 80, 80);
-          doc.text(`Quantidade: ${item.quantity} ${itemUnit}  |  Produzido: ${item.produced_quantity} ${itemUnit}`, 14, y);
+          doc.text(`Quantidade: ${fmtQty(item.quantity)} ${itemUnit}  |  Produzido: ${fmtQty(item.produced_quantity)} ${itemUnit}`, 14, y);
           y += 6;
 
           const { data: subOrders } = await supabase
@@ -961,8 +972,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
           const key = group.quoteId || '__avulsas__';
           const expanded = expandedGroups.has(key);
           const progress = getGroupProgress(group);
-          const totalPecas = group.orders.reduce((s, o) => s + o.total_quantity, 0);
-          const produzidas = group.orders.reduce((s, o) => s + o.produced_quantity, 0);
+          const totalPecas = group.orders.reduce((s, o) => s + toNum(o.total_quantity), 0);
+          const produzidas = group.orders.reduce((s, o) => s + toNum(o.produced_quantity), 0);
           const isOverdue = group.deadline && new Date(group.deadline + 'T00:00:00') < new Date() && progress < 100;
           const allDone = group.orders.every(o => o.status === 'completed');
 
@@ -1008,7 +1019,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                   <div className="flex items-center gap-4 text-xs text-gray-500 mb-2 flex-wrap">
                     <span className="flex items-center gap-1">
                       <Package className="w-3 h-3" />
-                      {group.orders.length} ordem(ns) — {totalPecas} peca(s)
+                      {group.orders.length} ordem(ns) — {fmtQty(totalPecas)} peca(s)
                     </span>
                     {group.deadline && (
                       <span className={`flex items-center gap-1 ${isOverdue ? 'text-red-600 font-semibold' : ''}`}>
@@ -1028,7 +1039,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                       />
                     </div>
                     <span className={`text-xs font-bold whitespace-nowrap ${allDone ? 'text-green-600' : 'text-gray-600'}`}>
-                      {produzidas}/{totalPecas} ({progress}%)
+                      {fmtQty(produzidas)}/{fmtQty(totalPecas)} ({progress}%)
                     </span>
                   </div>
                 </div>
@@ -1056,7 +1067,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               {expanded && (
                 <div className="border-t border-gray-100 divide-y divide-gray-100">
                   {group.orders.map((order) => {
-                    const orderProgress = order.total_quantity === 0 ? 0 : Math.round((order.produced_quantity / order.total_quantity) * 100);
+                    const orderProgress = toNum(order.total_quantity) === 0 ? 0 : Math.round((toNum(order.produced_quantity) / toNum(order.total_quantity)) * 100);
                     const hasNoItems = !order.production_order_items || order.production_order_items.length === 0;
                     const isSyncing = syncingOrderId === order.id;
 
@@ -1121,7 +1132,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                           {(order.production_order_items || []).map((item) => {
                             const itemName = item.products?.name || item.materials?.name || item.compositions?.name || 'Item sem nome';
                             const itemUnit = item.products?.unit || item.materials?.unit || 'un';
-                            const itemProgress = item.quantity === 0 ? 0 : Math.round((item.produced_quantity / item.quantity) * 100);
+                            const itemProgress = toNum(item.quantity) === 0 ? 0 : Math.round((toNum(item.produced_quantity) / toNum(item.quantity)) * 100);
                             const isDeleting = deletingItemId === item.id;
 
                             return (
@@ -1136,7 +1147,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                                 <div className="flex-1 min-w-0">
                                   <div className="font-medium text-gray-800 text-sm truncate">{itemName}</div>
                                   <div className="text-xs text-gray-500">
-                                    {item.produced_quantity}/{item.quantity} {itemUnit}
+                                    {fmtQty(item.produced_quantity)}/{fmtQty(item.quantity)} {itemUnit}
                                     <span className="ml-2 text-gray-400">({itemProgress}%)</span>
                                   </div>
                                 </div>
@@ -1247,9 +1258,10 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                 <label className="block text-xs font-semibold text-gray-600 mb-1.5">Quantidade</label>
                 <input
                   type="number"
-                  min={1}
+                  min={0.001}
+                  step={0.001}
                   value={addQuantity}
-                  onChange={e => setAddQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                  onChange={e => setAddQuantity(Math.max(0.001, parseFloat(e.target.value) || 1))}
                   className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 />
               </div>
