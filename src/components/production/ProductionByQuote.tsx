@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   ChevronDown, ChevronRight, Building2, Calendar, Package, QrCode, Layers,
-  FileText, Plus, Trash2, RefreshCw, AlertCircle, Search, X
+  FileText, Plus, Trash2, RefreshCw, AlertCircle, Search, X, Award
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import jsPDF from 'jspdf';
@@ -637,6 +637,306 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
     }
   };
 
+  const handleExportCertificatePDF = async (group: QuoteGroup) => {
+    try {
+      const doc = new jsPDF();
+      const companyName = companySettings.company_trade_name || companySettings.company_name || 'Aliancer Engenharia e Topografia';
+      const companyAddress = companySettings.company_address || '';
+      const companyPhone = companySettings.company_phone || '';
+      const companyCnpj = companySettings.company_cnpj || '';
+      const logoUrl = companySettings.logo_url || '';
+      const pageWidth = doc.internal.pageSize.width;
+      const pageHeight = doc.internal.pageSize.height;
+      let y = 14;
+
+      let logoBase64: string | null = null;
+      if (logoUrl) logoBase64 = await loadImageAsBase64(logoUrl);
+
+      const addPageIfNeeded = (space: number) => {
+        if (y + space > pageHeight - 20) {
+          doc.addPage();
+          y = 14;
+          drawCertHeader();
+        }
+      };
+
+      const drawCertHeader = () => {
+        doc.setFillColor(10, 80, 140);
+        doc.rect(0, 0, pageWidth, 32, 'F');
+        if (logoBase64) {
+          doc.addImage(logoBase64, 'PNG', 12, 6, 20, 20);
+        }
+        const tx = logoBase64 ? 36 : 12;
+        doc.setFontSize(13);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(255, 255, 255);
+        doc.text(companyName.toUpperCase(), tx, 14);
+        doc.setFontSize(7);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(200, 230, 255);
+        const subLine = [companyAddress, companyPhone, companyCnpj ? `CNPJ: ${companyCnpj}` : ''].filter(Boolean).join('  |  ');
+        if (subLine) doc.text(subLine, tx, 21);
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(255, 220, 60);
+        doc.text('CERTIFICADO DE ORIGEM DIGITAL', pageWidth / 2, 27, { align: 'center' });
+        y = 40;
+      };
+
+      drawCertHeader();
+
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(10, 80, 140);
+      doc.text(`Cliente: ${group.customerName}`, 14, y);
+      y += 6;
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(60, 60, 60);
+      if (group.deadline) {
+        doc.text(`Prazo de entrega: ${new Date(group.deadline + 'T00:00:00').toLocaleDateString('pt-BR')}`, 14, y);
+        y += 5;
+      }
+      const totalPecas = group.orders.reduce((s, o) => s + o.total_quantity, 0);
+      const produzidas = group.orders.reduce((s, o) => s + o.produced_quantity, 0);
+      const prog = totalPecas === 0 ? 0 : Math.round((produzidas / totalPecas) * 100);
+      doc.text(`Total de pecas: ${totalPecas}  |  Produzidas: ${produzidas} (${prog}%)  |  Emitido em: ${new Date().toLocaleString('pt-BR')}`, 14, y);
+      y += 8;
+
+      doc.setDrawColor(10, 126, 194);
+      doc.setLineWidth(0.6);
+      doc.line(14, y, pageWidth - 14, y);
+      y += 6;
+
+      const BIP_LABELS: Record<number, string> = {
+        0: 'BIP 0 — Impressao de Etiqueta',
+        1: 'BIP 1 — Inicio de Producao',
+        2: 'BIP 2 — Concretagem',
+        3: 'BIP 3 — Desforma',
+        4: 'BIP 4 — Inspecao Final',
+        5: 'BIP 5 — Expedicao',
+        6: 'BIP 6 — Montagem em Obra',
+      };
+
+      for (const order of group.orders) {
+        if (!order.production_order_items || order.production_order_items.length === 0) continue;
+
+        for (const item of order.production_order_items) {
+          if (!item.product_id) continue;
+
+          const itemName = item.products?.name || 'Produto';
+          const itemUnit = item.products?.unit || 'un';
+
+          addPageIfNeeded(30);
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(10, 80, 140);
+          doc.text(`OP #${order.order_number}  —  ${itemName}`, 14, y);
+          y += 5;
+          doc.setFontSize(8);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(80, 80, 80);
+          doc.text(`Quantidade: ${item.quantity} ${itemUnit}  |  Produzido: ${item.produced_quantity} ${itemUnit}`, 14, y);
+          y += 6;
+
+          const { data: subOrders } = await supabase
+            .from('production_sub_orders')
+            .select('id, sequence_number, total_in_item, qr_token, status, produced_at')
+            .eq('production_order_item_id', item.id)
+            .order('sequence_number');
+
+          if (!subOrders || subOrders.length === 0) {
+            doc.setFontSize(8);
+            doc.setTextColor(180, 120, 0);
+            doc.text('Nenhuma sub-ordem (peca) registrada para este item.', 18, y);
+            y += 8;
+            continue;
+          }
+
+          for (const so of subOrders) {
+            addPageIfNeeded(60);
+
+            const qrImgY = y;
+            let qrBase64: string | null = null;
+            try {
+              qrBase64 = await QRCode.toDataURL(
+                `${window.location.origin}/track/${so.qr_token}`,
+                { width: 80, margin: 1 }
+              );
+            } catch {}
+
+            if (qrBase64) {
+              doc.addImage(qrBase64, 'PNG', pageWidth - 36, qrImgY, 22, 22);
+            }
+
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(30, 30, 30);
+            doc.text(`Peca ${so.sequence_number} de ${so.total_in_item}`, 18, y);
+            y += 5;
+
+            const statusLabels: Record<string, string> = {
+              pending: 'Aguardando producao',
+              in_production: 'Em producao',
+              produced: 'Produzida',
+              shipped: 'Expedida',
+              installed: 'Instalada em obra',
+            };
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(80, 80, 80);
+            doc.text(`Status: ${statusLabels[so.status] || so.status}`, 18, y);
+            if (so.produced_at) {
+              doc.text(`Producao concluida: ${new Date(so.produced_at).toLocaleDateString('pt-BR')}`, 90, y);
+            }
+            y += 5;
+
+            const { data: tracking } = await supabase
+              .from('product_tracking')
+              .select('id')
+              .eq('qr_token', so.qr_token)
+              .maybeSingle();
+
+            if (tracking?.id) {
+              const { data: stages } = await supabase
+                .from('production_tracking_stages')
+                .select(`
+                  id, completed_at, completed_by, notes,
+                  production_stages(stage_name, bip_number),
+                  production_piece_bip_data(
+                    bip_number, recipe_id, corpo_de_prova_number, ambient_temperature,
+                    cement_supplier, checklist_dimensions_ok, checklist_finish_ok,
+                    checklist_inserts_ok, inspector_name, truck_plate, driver_name,
+                    romaneio_number, foundation_reference, installer_name,
+                    recipes(name)
+                  )
+                `)
+                .eq('tracking_id', tracking.id)
+                .order('completed_at');
+
+              if (stages && stages.length > 0) {
+                const stageRows: string[][] = stages.map((s: any) => {
+                  const ps = Array.isArray(s.production_stages) ? s.production_stages[0] : s.production_stages;
+                  const bipNum = ps?.bip_number ?? '—';
+                  const bipLabel = typeof bipNum === 'number' ? BIP_LABELS[bipNum] || ps?.stage_name : ps?.stage_name || '—';
+                  const date = new Date(s.completed_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+                  const responsible = s.completed_by || '—';
+
+                  const bipDataArr: any[] = Array.isArray(s.production_piece_bip_data)
+                    ? s.production_piece_bip_data
+                    : (s.production_piece_bip_data ? [s.production_piece_bip_data] : []);
+                  const bd = bipDataArr[0];
+                  let extra = '';
+                  if (bd) {
+                    const parts: string[] = [];
+                    if (bd.recipes?.name) parts.push(`Traco: ${bd.recipes.name}`);
+                    if (bd.corpo_de_prova_number) parts.push(`CP: ${bd.corpo_de_prova_number}`);
+                    if (bd.ambient_temperature != null) parts.push(`Temp: ${bd.ambient_temperature}C`);
+                    if (bd.cement_supplier) parts.push(`Cimento: ${bd.cement_supplier}`);
+                    if (bd.inspector_name) parts.push(`Inspector: ${bd.inspector_name}`);
+                    const checklist: string[] = [];
+                    if (bd.checklist_dimensions_ok === true) checklist.push('Dim OK');
+                    if (bd.checklist_finish_ok === true) checklist.push('Acabamento OK');
+                    if (bd.checklist_inserts_ok === true) checklist.push('Insertos OK');
+                    if (checklist.length) parts.push(checklist.join(', '));
+                    if (bd.truck_plate) parts.push(`Placa: ${bd.truck_plate}`);
+                    if (bd.romaneio_number) parts.push(`Romaneio: ${bd.romaneio_number}`);
+                    if (bd.foundation_reference) parts.push(`Fundacao: ${bd.foundation_reference}`);
+                    if (bd.installer_name) parts.push(`Instalador: ${bd.installer_name}`);
+                    extra = parts.join(' | ');
+                  }
+                  return [bipLabel, date, responsible, extra || '—'];
+                });
+
+                autoTable(doc, {
+                  startY: y,
+                  head: [['Etapa', 'Data/Hora', 'Responsavel', 'Dados Registrados']],
+                  body: stageRows,
+                  theme: 'grid',
+                  headStyles: { fillColor: [10, 80, 140], textColor: [255, 255, 255], fontSize: 7, fontStyle: 'bold' },
+                  bodyStyles: { fontSize: 7 },
+                  columnStyles: { 0: { cellWidth: 42 }, 1: { cellWidth: 26 }, 2: { cellWidth: 28 }, 3: { cellWidth: 'auto' } },
+                  margin: { left: 18, right: qrBase64 ? 42 : 14 },
+                });
+                y = (doc as any).lastAutoTable.finalY + 5;
+              } else {
+                doc.setFontSize(7);
+                doc.setTextColor(150, 150, 150);
+                doc.text('Nenhum BIP registrado ainda.', 18, y);
+                y += 8;
+              }
+            } else {
+              doc.setFontSize(7);
+              doc.setTextColor(150, 150, 150);
+              doc.text('Nenhum rastreamento iniciado.', 18, y);
+              y += 8;
+            }
+
+            doc.setDrawColor(220, 220, 220);
+            doc.setLineWidth(0.2);
+            doc.line(18, y, pageWidth - 14, y);
+            y += 5;
+          }
+
+          y += 4;
+        }
+
+        y += 3;
+      }
+
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(10, 80, 140);
+      addPageIfNeeded(40);
+
+      doc.setDrawColor(10, 126, 194);
+      doc.setLineWidth(0.6);
+      doc.line(14, y, pageWidth - 14, y);
+      y += 8;
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 30, 30);
+      doc.text('DECLARACAO DE CONFORMIDADE', 14, y);
+      y += 5;
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(80, 80, 80);
+      const declaration = `Declaramos que os produtos relacionados neste certificado foram fabricados em conformidade com as normas tecnicas vigentes, submetidos aos controles de qualidade registrados neste documento e rastreados individualmente por codigo QR durante todo o processo de producao.`;
+      const lines = doc.splitTextToSize(declaration, pageWidth - 28);
+      doc.text(lines, 14, y);
+      y += lines.length * 5 + 8;
+
+      const sigX1 = 20, sigX2 = pageWidth / 2 + 10, sigY = y + 18;
+      doc.setDrawColor(80, 80, 80);
+      doc.setLineWidth(0.4);
+      doc.line(sigX1, sigY, sigX1 + 70, sigY);
+      doc.line(sigX2, sigY, sigX2 + 70, sigY);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 30, 30);
+      doc.text('Responsavel Tecnico', sigX1, sigY + 5);
+      doc.text('Controle de Qualidade', sigX2, sigY + 5);
+      y = sigY + 12;
+
+      const totalPages = (doc as any).internal.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(7);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(160, 160, 160);
+        doc.text(`Pagina ${i} de ${totalPages}  |  Documento gerado automaticamente pelo sistema  |  ${companyName}`, pageWidth / 2, pageHeight - 6, { align: 'center' });
+      }
+
+      const safeCustomer = group.customerName.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '');
+      doc.save(`certificado-origem-${safeCustomer}-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('Erro ao gerar certificado:', err);
+      alert('Erro ao gerar certificado.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -733,14 +1033,24 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                   </div>
                 </div>
 
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleExportGroupPDF(group); }}
-                  className="flex-shrink-0 flex items-center gap-1 text-xs text-gray-500 hover:text-blue-600 bg-gray-100 hover:bg-blue-50 px-3 py-2 rounded-lg border border-gray-200 hover:border-blue-200 transition-colors"
-                  title="Exportar relatorio da obra"
-                >
-                  <FileText className="w-4 h-4" />
-                  <span className="hidden sm:inline">Exportar</span>
-                </button>
+                <div className="flex-shrink-0 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => handleExportCertificatePDF(group)}
+                    className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg border border-amber-200 hover:border-amber-300 transition-colors"
+                    title="Emitir Certificado de Origem Digital"
+                  >
+                    <Award className="w-4 h-4" />
+                    <span className="hidden sm:inline">Certificado</span>
+                  </button>
+                  <button
+                    onClick={() => handleExportGroupPDF(group)}
+                    className="flex items-center gap-1 text-xs text-gray-500 hover:text-blue-600 bg-gray-100 hover:bg-blue-50 px-3 py-2 rounded-lg border border-gray-200 hover:border-blue-200 transition-colors"
+                    title="Exportar relatorio da obra"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span className="hidden sm:inline">Exportar</span>
+                  </button>
+                </div>
               </button>
 
               {expanded && (

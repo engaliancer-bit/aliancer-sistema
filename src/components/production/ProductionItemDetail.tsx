@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   X, Package, Layers, Ruler, Scale, QrCode, Printer, History,
-  Plus, ChevronDown, ChevronUp, AlertCircle, CheckCircle, Clock,
-  Truck, Hammer, RotateCcw
+  Plus, AlertCircle, CheckCircle, Clock, Truck, Hammer, RotateCcw,
+  ChevronRight, Eye, Zap
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import QRCode from 'qrcode';
@@ -103,29 +103,60 @@ interface SubOrder {
   sequence_number: number;
   total_in_item: number;
   qr_token: string;
-  status: 'pending' | 'in_production' | 'produced' | 'shipped';
+  status: 'pending' | 'in_production' | 'produced' | 'shipped' | 'installed';
   produced_at?: string;
   notes?: string;
   qrCodeUrl?: string;
 }
 
+interface BipStage {
+  id: string;
+  stage_key: string;
+  stage_name: string;
+  stage_order: number;
+  description?: string;
+  bip_number?: number;
+  requires_data?: boolean;
+  min_cure_hours?: number;
+}
+
+interface TrackingStageRecord {
+  id: string;
+  tracking_id: string;
+  stage_id: string;
+  completed_at: string;
+  completed_by: string;
+  notes?: string;
+  production_stages?: BipStage;
+  production_piece_bip_data?: {
+    recipe_id?: string;
+    corpo_de_prova_number?: string;
+    ambient_temperature?: number;
+    cement_supplier?: string;
+    checklist_dimensions_ok?: boolean;
+    checklist_finish_ok?: boolean;
+    checklist_inserts_ok?: boolean;
+    inspector_name?: string;
+    truck_plate?: string;
+    driver_name?: string;
+    romaneio_number?: string;
+    foundation_reference?: string;
+    installer_name?: string;
+    responsible_name?: string;
+    recipes?: { name: string };
+  }[];
+}
+
 interface TrackingRecord {
   id: string;
   qr_token: string;
+  sub_order_id?: string;
   production_date?: string;
-  expedition_date?: string;
-  assembly_date?: string;
   recipe_name?: string;
   quantity?: number;
   additional_notes?: string;
   created_at: string;
-  product_tracking_stages?: {
-    id: string;
-    completed_at: string;
-    completed_by?: string;
-    notes?: string;
-    production_stages?: { stage_key: string; name?: string };
-  }[];
+  production_tracking_stages?: TrackingStageRecord[];
 }
 
 interface Props {
@@ -143,18 +174,30 @@ const REINFORCEMENT_TYPE_LABEL: Record<string, string> = {
   threaded_bar_hook: 'Barra Roscada / Gancho',
 };
 
-const SUB_ORDER_STATUS_LABEL: Record<string, string> = {
+const SUB_STATUS_LABEL: Record<string, string> = {
   pending: 'Pendente',
   in_production: 'Em Producao',
   produced: 'Produzida',
   shipped: 'Expedida',
+  installed: 'Instalada',
 };
 
-const SUB_ORDER_STATUS_STYLE: Record<string, string> = {
+const SUB_STATUS_STYLE: Record<string, string> = {
   pending: 'text-gray-600 bg-gray-50 border-gray-200',
   in_production: 'text-amber-700 bg-amber-50 border-amber-200',
   produced: 'text-green-700 bg-green-50 border-green-200',
   shipped: 'text-blue-700 bg-blue-50 border-blue-200',
+  installed: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+};
+
+const BIP_COLORS: Record<number, string> = {
+  0: 'bg-gray-100 text-gray-700 border-gray-300',
+  1: 'bg-amber-100 text-amber-800 border-amber-300',
+  2: 'bg-blue-100 text-blue-800 border-blue-300',
+  3: 'bg-orange-100 text-orange-800 border-orange-300',
+  4: 'bg-green-100 text-green-800 border-green-300',
+  5: 'bg-cyan-100 text-cyan-800 border-cyan-300',
+  6: 'bg-emerald-100 text-emerald-800 border-emerald-300',
 };
 
 export default function ProductionItemDetail({ item, order, onClose, onGenerateLabel, onRefresh }: Props) {
@@ -165,9 +208,11 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
   const [reinforcements, setReinforcements] = useState<Reinforcement[]>([]);
   const [subOrders, setSubOrders] = useState<SubOrder[]>([]);
   const [trackingRecords, setTrackingRecords] = useState<TrackingRecord[]>([]);
+  const [bipStages, setBipStages] = useState<BipStage[]>([]);
+  const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingSubOrders, setGeneratingSubOrders] = useState(false);
-  const [activeSection, setActiveSection] = useState<string>('recipe');
+  const [activeSection, setActiveSection] = useState<string>('suborders');
 
   const itemName = item.products?.name || item.materials?.name || item.compositions?.name || 'Item';
   const itemUnit = item.products?.unit || item.materials?.unit || 'un';
@@ -184,10 +229,19 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
         item.product_id ? loadProduct(item.product_id) : Promise.resolve(),
         loadSubOrders(),
         loadTrackingRecords(),
+        loadBipStages(),
       ]);
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadBipStages = async () => {
+    const { data } = await supabase
+      .from('production_stages')
+      .select('*')
+      .order('stage_order');
+    setBipStages(data || []);
   };
 
   const loadProduct = async (productId: string) => {
@@ -243,6 +297,9 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
       }
     }));
     setSubOrders(withQR);
+    if (withQR.length > 0 && !selectedPiece) {
+      setSelectedPiece(withQR[0].id);
+    }
   };
 
   const loadTrackingRecords = async () => {
@@ -250,9 +307,16 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
       .from('product_tracking')
       .select(`
         *,
-        product_tracking_stages:production_tracking_stages(
-          id, completed_at, completed_by, notes,
-          production_stages(stage_key)
+        production_tracking_stages(
+          id, tracking_id, stage_id, completed_at, completed_by, notes,
+          production_stages(id, stage_key, stage_name, stage_order, bip_number, requires_data, min_cure_hours, description),
+          production_piece_bip_data(
+            recipe_id, corpo_de_prova_number, ambient_temperature, cement_supplier,
+            checklist_dimensions_ok, checklist_finish_ok, checklist_inserts_ok, inspector_name,
+            truck_plate, driver_name, romaneio_number,
+            foundation_reference, installer_name, responsible_name,
+            recipes(name)
+          )
         )
       `)
       .eq('production_order_id', order.id)
@@ -297,36 +361,25 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
     }
   };
 
-  const handleUpdateSubOrderStatus = async (subOrderId: string, newStatus: SubOrder['status']) => {
-    const { error } = await supabase
-      .from('production_sub_orders')
-      .update({
-        status: newStatus,
-        produced_at: newStatus === 'produced' || newStatus === 'shipped' ? new Date().toISOString() : null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', subOrderId);
-
-    if (error) { alert('Erro ao atualizar status: ' + error.message); return; }
-    await loadSubOrders();
-  };
-
   const handlePrintAllQR = useCallback(async () => {
     if (subOrders.length === 0) return;
-    const productName = itemName;
-    const orderNum = order.order_number;
     const customerName = order.customers?.name || 'Estoque';
     const recipeName = recipe?.name || 'Traco nao especificado';
+    const dims: string[] = [];
+    if (mold?.section_width_meters) dims.push(`${(mold.section_width_meters * 100).toFixed(0)}x${(mold.section_height_meters || 0) * 100 > 0 ? ((mold.section_height_meters || 0) * 100).toFixed(0) : '?'} cm`);
+    if (mold?.reference_measurement_meters) dims.push(`L=${mold.reference_measurement_meters.toFixed(2)}m`);
+    const dimStr = dims.join(' ');
 
     const cells = await Promise.all(subOrders.map(async (so) => {
       const url = `${window.location.origin}/track/${so.qr_token}`;
       const qrUrl = await QRCode.toDataURL(url, { width: 200, margin: 1 });
       return `
         <div class="label">
-          <div class="product-name">${productName}</div>
-          <div class="info-row"><span class="label-text">OP #${orderNum} &mdash; Peca ${so.sequence_number}/${so.total_in_item}</span></div>
-          <div class="info-row"><span class="label-text">${customerName}</span></div>
-          <div class="info-row"><span class="label-text">${recipeName}</span></div>
+          <div class="product-name">${itemName}</div>
+          ${dimStr ? `<div class="info-row">${dimStr}</div>` : ''}
+          <div class="info-row">OP #${order.order_number} &mdash; Peca ${so.sequence_number}/${so.total_in_item}</div>
+          <div class="info-row">${customerName}</div>
+          <div class="info-row traco">${recipeName}</div>
           <img src="${qrUrl}" class="qr" />
         </div>
       `;
@@ -339,6 +392,7 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
       .label { width: 5cm; height: 8cm; padding: 0.2cm; display: flex; flex-direction: column; align-items: center; page-break-inside: avoid; border: 1px solid #ccc; }
       .product-name { font-size: 7pt; font-weight: bold; text-align: center; margin-bottom: 0.1cm; }
       .info-row { font-size: 5.5pt; text-align: center; color: #333; margin-bottom: 0.05cm; }
+      .traco { color: #1a5fa8; font-weight: bold; }
       .qr { width: 2.4cm; height: 2.4cm; margin-top: auto; }
     </style></head><body>${cells.join('')}</body></html>`;
 
@@ -351,7 +405,48 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
       URL.revokeObjectURL(url);
       alert('Habilite pop-ups para imprimir as etiquetas');
     }
-  }, [subOrders, itemName, order, recipe]);
+  }, [subOrders, itemName, order, recipe, mold]);
+
+  const handlePrintSingleQR = useCallback(async (so: SubOrder) => {
+    const customerName = order.customers?.name || 'Estoque';
+    const recipeName = recipe?.name || 'Traco nao especificado';
+    const dims: string[] = [];
+    if (mold?.section_width_meters) dims.push(`${(mold.section_width_meters * 100).toFixed(0)}x${(mold.section_height_meters || 0) * 100 > 0 ? ((mold.section_height_meters || 0) * 100).toFixed(0) : '?'} cm`);
+    if (mold?.reference_measurement_meters) dims.push(`L=${mold.reference_measurement_meters.toFixed(2)}m`);
+    const dimStr = dims.join(' ');
+
+    const url = `${window.location.origin}/track/${so.qr_token}`;
+    const qrUrl = await QRCode.toDataURL(url, { width: 200, margin: 1 });
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+      @page { size: 5cm 8cm; margin: 0; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: Arial, sans-serif; display: flex; }
+      .label { width: 5cm; height: 8cm; padding: 0.2cm; display: flex; flex-direction: column; align-items: center; border: 1px solid #ccc; }
+      .product-name { font-size: 7pt; font-weight: bold; text-align: center; margin-bottom: 0.1cm; }
+      .info-row { font-size: 5.5pt; text-align: center; color: #333; margin-bottom: 0.05cm; }
+      .traco { color: #1a5fa8; font-weight: bold; }
+      .qr { width: 2.4cm; height: 2.4cm; margin-top: auto; }
+    </style></head><body>
+      <div class="label">
+        <div class="product-name">${itemName}</div>
+        ${dimStr ? `<div class="info-row">${dimStr}</div>` : ''}
+        <div class="info-row">OP #${order.order_number} &mdash; Peca ${so.sequence_number}/${so.total_in_item}</div>
+        <div class="info-row">${customerName}</div>
+        <div class="info-row traco">${recipeName}</div>
+        <img src="${qrUrl}" class="qr" />
+      </div>
+    </body></html>`;
+
+    const blob = new Blob([html], { type: 'text/html' });
+    const blobUrl = URL.createObjectURL(blob);
+    const win = window.open(blobUrl, '_blank');
+    if (win) {
+      win.addEventListener('load', () => { URL.revokeObjectURL(blobUrl); win.print(); });
+    } else {
+      URL.revokeObjectURL(blobUrl);
+      alert('Habilite pop-ups para imprimir a etiqueta');
+    }
+  }, [itemName, order, recipe, mold]);
 
   const groupedReinforcements = reinforcements.reduce<Record<string, Reinforcement[]>>((acc, r) => {
     const key = r.reinforcement_type || 'other';
@@ -372,12 +467,32 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
     }
   };
 
+  const getTrackingForPiece = (subOrderId: string) => {
+    return trackingRecords.find(t => t.sub_order_id === subOrderId) || null;
+  };
+
+  const getCompletedBipNumbers = (tracking: TrackingRecord | null): number[] => {
+    if (!tracking?.production_tracking_stages) return [];
+    return tracking.production_tracking_stages
+      .map(s => s.production_stages?.bip_number)
+      .filter((n): n is number => n !== undefined && n !== null);
+  };
+
+  const statusCounts = subOrders.reduce<Record<string, number>>((acc, so) => {
+    acc[so.status] = (acc[so.status] || 0) + 1;
+    return acc;
+  }, {});
+
   const sections = [
-    { key: 'recipe', label: 'Traco / Concreto', icon: Layers },
-    { key: 'ferragem', label: 'Ferragem', icon: Ruler },
     { key: 'suborders', label: `Sub-ordens / QR (${subOrders.length})`, icon: QrCode },
+    { key: 'ferragem', label: 'Ferragem', icon: Ruler },
+    { key: 'recipe', label: 'Traco / Concreto', icon: Layers },
     { key: 'historico', label: 'Historico', icon: History },
   ];
+
+  const selectedSubOrder = subOrders.find(s => s.id === selectedPiece) || null;
+  const selectedTracking = selectedPiece ? getTrackingForPiece(selectedPiece) : null;
+  const completedBips = getCompletedBipNumbers(selectedTracking);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-3 sm:p-6">
@@ -440,22 +555,10 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
                   <div className="font-bold text-gray-800 text-sm">{productDetail.total_weight.toFixed(1)} kg</div>
                 </div>
               )}
-              {mold?.reference_volume_m3 && (
-                <div className="text-center">
-                  <div className="text-xs text-gray-400">Vol. unit.</div>
-                  <div className="font-bold text-gray-800 text-sm">{mold.reference_volume_m3.toFixed(4)} m³</div>
-                </div>
-              )}
               {totalConcreteVolume && (
                 <div className="text-center">
                   <div className="text-xs text-gray-400">Vol. total pedido</div>
                   <div className="font-bold text-blue-700 text-sm">{totalConcreteVolume.toFixed(3)} m³</div>
-                </div>
-              )}
-              {productDetail.has_flange && productDetail.flange_length_meters && (
-                <div className="text-center">
-                  <div className="text-xs text-gray-400">Flange</div>
-                  <div className="font-bold text-gray-800 text-sm">{productDetail.flange_length_meters.toFixed(2)} m</div>
                 </div>
               )}
             </div>
@@ -484,95 +587,131 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
             <div className="flex items-center justify-center py-12 text-gray-400 text-sm">Carregando...</div>
           ) : (
             <>
-              {activeSection === 'recipe' && (
+              {activeSection === 'suborders' && (
                 <div className="space-y-4">
-                  {!recipe ? (
-                    <div className="text-center py-8 text-gray-400">
-                      <Layers className="w-10 h-10 mx-auto mb-2 opacity-40" />
-                      <p>Nenhum traco vinculado a este produto</p>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <div className="font-semibold text-gray-800">Pecas Individuais com QR</div>
+                      <div className="text-xs text-gray-500">Um QR unico por peca fisica — bipado em cada etapa de producao</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {subOrders.length > 0 && (
+                        <button
+                          onClick={handlePrintAllQR}
+                          className="flex items-center gap-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg border border-gray-200 transition-colors"
+                        >
+                          <Printer className="w-4 h-4" />
+                          Imprimir Todas
+                        </button>
+                      )}
+                      <button
+                        onClick={handleGenerateSubOrders}
+                        disabled={generatingSubOrders}
+                        className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors disabled:opacity-60"
+                      >
+                        {generatingSubOrders ? (
+                          <RotateCcw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Plus className="w-4 h-4" />
+                        )}
+                        {subOrders.length > 0 ? 'Regenerar' : 'Gerar'} ({item.quantity})
+                      </button>
+                    </div>
+                  </div>
+
+                  {subOrders.length > 0 && (
+                    <div className="flex gap-2 flex-wrap">
+                      {Object.entries(statusCounts).map(([status, count]) => (
+                        <span key={status} className={`text-xs px-2 py-1 rounded-full border ${SUB_STATUS_STYLE[status]}`}>
+                          {count} {SUB_STATUS_LABEL[status] || status}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {subOrders.length === 0 ? (
+                    <div className="text-center py-10 border-2 border-dashed border-gray-200 rounded-xl text-gray-400">
+                      <QrCode className="w-10 h-10 mx-auto mb-2 opacity-40" />
+                      <p className="text-sm">Nenhuma sub-ordem gerada ainda</p>
+                      <p className="text-xs mt-1">Clique em "Gerar" para criar {item.quantity} QR code(s) individuais</p>
                     </div>
                   ) : (
-                    <>
-                      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Layers className="w-4 h-4 text-blue-600" />
-                          <span className="font-bold text-blue-900">{recipe.name}</span>
-                        </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-                          <div>
-                            <div className="text-xs text-blue-600 mb-0.5">Tipo</div>
-                            <div className="font-medium text-gray-800">{concreteTypeLabel(recipe.concrete_type)}</div>
-                          </div>
-                          {recipe.specific_weight && (
-                            <div>
-                              <div className="text-xs text-blue-600 mb-0.5">Peso especifico</div>
-                              <div className="font-medium text-gray-800">{recipe.specific_weight} kg/m³</div>
-                            </div>
-                          )}
-                          {recipe.moisture_percentage && (
-                            <div>
-                              <div className="text-xs text-blue-600 mb-0.5">Umidade</div>
-                              <div className="font-medium text-gray-800">{recipe.moisture_percentage}%</div>
-                            </div>
-                          )}
-                          {unitConcreteVolume && (
-                            <div>
-                              <div className="text-xs text-blue-600 mb-0.5">
-                                Vol. unit. ({volumeSource === 'forma' ? 'forma' : 'produto'})
-                              </div>
-                              <div className="font-medium text-gray-800">{unitConcreteVolume.toFixed(4)} m³</div>
-                            </div>
-                          )}
-                          {totalConcreteVolume && (
-                            <div>
-                              <div className="text-xs text-blue-600 mb-0.5">Volume total ({item.quantity} pcs)</div>
-                              <div className="font-bold text-blue-700">{totalConcreteVolume.toFixed(3)} m³</div>
-                            </div>
-                          )}
-                        </div>
-                        {!unitConcreteVolume && (
-                          <div className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
-                            Volume nao cadastrado na forma. Cadastre o volume de referencia na forma para calcular as quantidades totais de material.
-                          </div>
-                        )}
-                      </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {subOrders.map((so) => {
+                        const tracking = getTrackingForPiece(so.id);
+                        const bipsCompleted = getCompletedBipNumbers(tracking);
+                        const lastBip = bipsCompleted.length > 0 ? Math.max(...bipsCompleted) : -1;
+                        const isSelected = selectedPiece === so.id;
 
-                      {recipeItems.length > 0 && (
-                        <div>
-                          <div className="text-sm font-semibold text-gray-700 mb-2">Composicao do Traco</div>
-                          <div className="overflow-x-auto rounded-xl border border-gray-200">
-                            <table className="w-full text-sm">
-                              <thead>
-                                <tr className="bg-gray-50 border-b border-gray-200">
-                                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500">Material</th>
-                                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Qtd./m³</th>
-                                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Unidade</th>
-                                  {totalConcreteVolume && (
-                                    <th className="text-right px-4 py-2.5 text-xs font-semibold text-blue-500">
-                                      Qtd. Total ({item.quantity} pcs)
-                                    </th>
-                                  )}
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-gray-100">
-                                {recipeItems.map((ri) => (
-                                  <tr key={ri.id} className="hover:bg-gray-50">
-                                    <td className="px-4 py-2.5 font-medium text-gray-800">{ri.materials?.name || '—'}</td>
-                                    <td className="px-4 py-2.5 text-right text-gray-600">{ri.quantity.toFixed(3)}</td>
-                                    <td className="px-4 py-2.5 text-right text-gray-500">{ri.materials?.unit || '—'}</td>
-                                    {totalConcreteVolume && (
-                                      <td className="px-4 py-2.5 text-right font-semibold text-blue-700">
-                                        {(ri.quantity * totalConcreteVolume).toFixed(3)} {ri.materials?.unit}
-                                      </td>
-                                    )}
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                        return (
+                          <div
+                            key={so.id}
+                            onClick={() => setSelectedPiece(so.id)}
+                            className={`border-2 rounded-xl p-3 flex flex-col items-center gap-2 cursor-pointer transition-all ${
+                              isSelected
+                                ? 'border-blue-400 bg-blue-50 shadow-md'
+                                : so.status === 'installed' ? 'border-emerald-200 bg-emerald-50'
+                                : so.status === 'produced' || so.status === 'shipped' ? 'border-green-200 bg-green-50'
+                                : 'border-gray-200 bg-white hover:border-gray-300'
+                            }`}
+                          >
+                            <div className="text-xs font-bold text-gray-700 w-full text-center">
+                              Peca {so.sequence_number}/{so.total_in_item}
+                            </div>
+
+                            {so.qrCodeUrl && (
+                              <img src={so.qrCodeUrl} alt={`QR peca ${so.sequence_number}`} className="w-20 h-20" />
+                            )}
+
+                            <span className={`text-xs px-2 py-0.5 rounded-full border ${SUB_STATUS_STYLE[so.status]}`}>
+                              {SUB_STATUS_LABEL[so.status]}
+                            </span>
+
+                            {lastBip >= 0 && (
+                              <div className="text-xs text-gray-500">
+                                BIP {lastBip} concluido
+                              </div>
+                            )}
+
+                            <div className="flex gap-1 w-full">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handlePrintSingleQR(so); }}
+                                className="flex-1 flex items-center justify-center gap-1 text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 py-1.5 rounded-lg border border-blue-200 transition-colors"
+                              >
+                                <Printer className="w-3 h-3" />
+                                Etiqueta
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setSelectedPiece(so.id); setActiveSection('historico'); }}
+                                className="flex-1 flex items-center justify-center gap-1 text-xs text-gray-600 bg-gray-50 hover:bg-gray-100 py-1.5 rounded-lg border border-gray-200 transition-colors"
+                              >
+                                <Eye className="w-3 h-3" />
+                                BIPs
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      )}
-                    </>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {subOrders.length > 0 && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Zap className="w-4 h-4 text-blue-600" />
+                        <span className="text-sm font-semibold text-blue-800">Fluxo de BIPs</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[0, 1, 2, 3, 4, 5, 6].map((bip) => {
+                          const stage = bipStages.find(s => s.bip_number === bip);
+                          return (
+                            <div key={bip} className={`text-xs px-2 py-1 rounded-lg border font-medium ${BIP_COLORS[bip]}`}>
+                              BIP {bip}: {stage?.stage_name || `Etapa ${bip}`}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
@@ -637,154 +776,275 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
                 </div>
               )}
 
-              {activeSection === 'suborders' && (
+              {activeSection === 'recipe' && (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <div>
-                      <div className="font-semibold text-gray-800">Sub-Ordens Individuais</div>
-                      <div className="text-xs text-gray-500">Uma sub-ordem por peca fisica, com QR unico</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {subOrders.length > 0 && (
-                        <button
-                          onClick={handlePrintAllQR}
-                          className="flex items-center gap-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg border border-gray-200 transition-colors"
-                        >
-                          <Printer className="w-4 h-4" />
-                          Imprimir Todas
-                        </button>
-                      )}
-                      <button
-                        onClick={handleGenerateSubOrders}
-                        disabled={generatingSubOrders}
-                        className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors disabled:opacity-60"
-                      >
-                        {generatingSubOrders ? (
-                          <RotateCcw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Plus className="w-4 h-4" />
-                        )}
-                        {subOrders.length > 0 ? 'Regenerar' : 'Gerar'} Sub-Ordens ({item.quantity})
-                      </button>
-                    </div>
-                  </div>
-
-                  {subOrders.length === 0 ? (
-                    <div className="text-center py-10 border-2 border-dashed border-gray-200 rounded-xl text-gray-400">
-                      <QrCode className="w-10 h-10 mx-auto mb-2 opacity-40" />
-                      <p className="text-sm">Nenhuma sub-ordem gerada ainda</p>
-                      <p className="text-xs mt-1">Clique em "Gerar Sub-Ordens" para criar {item.quantity} QR code(s)</p>
+                  {!recipe ? (
+                    <div className="text-center py-8 text-gray-400">
+                      <Layers className="w-10 h-10 mx-auto mb-2 opacity-40" />
+                      <p>Nenhum traco vinculado a este produto</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {subOrders.map((so) => (
-                        <div key={so.id} className={`border-2 rounded-xl p-3 flex flex-col items-center gap-2 ${
-                          so.status === 'produced' || so.status === 'shipped' ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-white'
-                        }`}>
-                          <div className="text-xs font-bold text-gray-700">
-                            Peca {so.sequence_number}/{so.total_in_item}
+                    <>
+                      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Layers className="w-4 h-4 text-blue-600" />
+                          <span className="font-bold text-blue-900">{recipe.name}</span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                          <div>
+                            <div className="text-xs text-blue-600 mb-0.5">Tipo</div>
+                            <div className="font-medium text-gray-800">{concreteTypeLabel(recipe.concrete_type)}</div>
                           </div>
-
-                          {so.qrCodeUrl && (
-                            <img src={so.qrCodeUrl} alt={`QR peca ${so.sequence_number}`} className="w-20 h-20" />
-                          )}
-
-                          <span className={`text-xs px-2 py-0.5 rounded-full border ${SUB_ORDER_STATUS_STYLE[so.status]}`}>
-                            {SUB_ORDER_STATUS_LABEL[so.status]}
-                          </span>
-
-                          {so.produced_at && (
-                            <div className="text-xs text-gray-400">
-                              {new Date(so.produced_at).toLocaleDateString('pt-BR')}
+                          {recipe.specific_weight && (
+                            <div>
+                              <div className="text-xs text-blue-600 mb-0.5">Peso especifico</div>
+                              <div className="font-medium text-gray-800">{recipe.specific_weight} kg/m³</div>
                             </div>
                           )}
+                          {recipe.moisture_percentage && (
+                            <div>
+                              <div className="text-xs text-blue-600 mb-0.5">Umidade</div>
+                              <div className="font-medium text-gray-800">{recipe.moisture_percentage}%</div>
+                            </div>
+                          )}
+                          {unitConcreteVolume && (
+                            <div>
+                              <div className="text-xs text-blue-600 mb-0.5">
+                                Vol. unit. ({volumeSource === 'forma' ? 'forma' : 'produto'})
+                              </div>
+                              <div className="font-medium text-gray-800">{unitConcreteVolume.toFixed(4)} m³</div>
+                            </div>
+                          )}
+                          {totalConcreteVolume && (
+                            <div>
+                              <div className="text-xs text-blue-600 mb-0.5">Volume total ({item.quantity} pcs)</div>
+                              <div className="font-bold text-blue-700">{totalConcreteVolume.toFixed(3)} m³</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
 
-                          <div className="flex flex-col gap-1 w-full">
-                            <button
-                              onClick={() => onGenerateLabel(order, item, so)}
-                              className="w-full flex items-center justify-center gap-1 text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-1.5 rounded-lg border border-blue-200 transition-colors"
-                            >
-                              <Printer className="w-3 h-3" />
-                              Etiqueta
-                            </button>
-
-                            {so.status === 'pending' && (
-                              <button
-                                onClick={() => handleUpdateSubOrderStatus(so.id, 'in_production')}
-                                className="w-full flex items-center justify-center gap-1 text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 px-2 py-1.5 rounded-lg border border-amber-200 transition-colors"
-                              >
-                                <Hammer className="w-3 h-3" />
-                                Iniciar
-                              </button>
-                            )}
-                            {so.status === 'in_production' && (
-                              <button
-                                onClick={() => handleUpdateSubOrderStatus(so.id, 'produced')}
-                                className="w-full flex items-center justify-center gap-1 text-xs text-green-700 bg-green-50 hover:bg-green-100 px-2 py-1.5 rounded-lg border border-green-200 transition-colors"
-                              >
-                                <CheckCircle className="w-3 h-3" />
-                                Produzida
-                              </button>
-                            )}
-                            {so.status === 'produced' && (
-                              <button
-                                onClick={() => handleUpdateSubOrderStatus(so.id, 'shipped')}
-                                className="w-full flex items-center justify-center gap-1 text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-1.5 rounded-lg border border-blue-200 transition-colors"
-                              >
-                                <Truck className="w-3 h-3" />
-                                Expedir
-                              </button>
-                            )}
+                      {recipeItems.length > 0 && (
+                        <div>
+                          <div className="text-sm font-semibold text-gray-700 mb-2">Composicao do Traco</div>
+                          <div className="overflow-x-auto rounded-xl border border-gray-200">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="bg-gray-50 border-b border-gray-200">
+                                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500">Material</th>
+                                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Qtd./m³</th>
+                                  <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500">Unidade</th>
+                                  {totalConcreteVolume && (
+                                    <th className="text-right px-4 py-2.5 text-xs font-semibold text-blue-500">
+                                      Qtd. Total ({item.quantity} pcs)
+                                    </th>
+                                  )}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-100">
+                                {recipeItems.map((ri) => (
+                                  <tr key={ri.id} className="hover:bg-gray-50">
+                                    <td className="px-4 py-2.5 font-medium text-gray-800">{ri.materials?.name || '—'}</td>
+                                    <td className="px-4 py-2.5 text-right text-gray-600">{ri.quantity.toFixed(3)}</td>
+                                    <td className="px-4 py-2.5 text-right text-gray-500">{ri.materials?.unit || '—'}</td>
+                                    {totalConcreteVolume && (
+                                      <td className="px-4 py-2.5 text-right font-semibold text-blue-700">
+                                        {(ri.quantity * totalConcreteVolume).toFixed(3)} {ri.materials?.unit}
+                                      </td>
+                                    )}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
                           </div>
                         </div>
-                      ))}
-                    </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
 
               {activeSection === 'historico' && (
-                <div className="space-y-3">
-                  {trackingRecords.length === 0 ? (
+                <div className="space-y-4">
+                  {subOrders.length === 0 ? (
                     <div className="text-center py-8 text-gray-400">
                       <History className="w-10 h-10 mx-auto mb-2 opacity-40" />
-                      <p>Nenhum registro de rastreamento encontrado</p>
-                      <p className="text-xs mt-1">Gere uma etiqueta QR para iniciar o rastreamento</p>
+                      <p className="text-sm">Gere as sub-ordens para iniciar o rastreamento por peca</p>
                     </div>
                   ) : (
-                    trackingRecords.map((record) => (
-                      <div key={record.id} className="border border-gray-200 rounded-xl p-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="text-sm font-semibold text-gray-800">
-                            QR: <span className="font-mono text-xs text-gray-500">{record.qr_token.slice(0, 12)}...</span>
+                    <>
+                      <div>
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Selecionar Peca</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {subOrders.map((so) => {
+                            const tracking = getTrackingForPiece(so.id);
+                            const bipsCompleted = getCompletedBipNumbers(tracking);
+                            return (
+                              <button
+                                key={so.id}
+                                onClick={() => setSelectedPiece(so.id)}
+                                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                                  selectedPiece === so.id
+                                    ? 'bg-blue-600 text-white border-blue-600'
+                                    : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
+                                }`}
+                              >
+                                Peca {so.sequence_number}
+                                {bipsCompleted.length > 0 && (
+                                  <span className={`text-xs px-1 rounded ${selectedPiece === so.id ? 'bg-blue-500' : 'bg-green-100 text-green-700'}`}>
+                                    BIP {Math.max(...bipsCompleted)}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {selectedSubOrder && (
+                        <div>
+                          <div className="flex items-center justify-between mb-3">
+                            <div>
+                              <div className="font-semibold text-gray-800">
+                                Peca {selectedSubOrder.sequence_number}/{selectedSubOrder.total_in_item}
+                              </div>
+                              <div className="text-xs text-gray-500 font-mono">
+                                QR: {selectedSubOrder.qr_token.slice(0, 16)}...
+                              </div>
+                            </div>
+                            <span className={`text-xs px-2 py-1 rounded-full border ${SUB_STATUS_STYLE[selectedSubOrder.status]}`}>
+                              {SUB_STATUS_LABEL[selectedSubOrder.status]}
+                            </span>
                           </div>
-                          <div className="text-xs text-gray-400">
-                            {new Date(record.created_at).toLocaleDateString('pt-BR')}
+
+                          <div className="space-y-2">
+                            {bipStages.map((stage) => {
+                              const bip = stage.bip_number ?? stage.stage_order - 1;
+                              const completedStage = selectedTracking?.production_tracking_stages?.find(
+                                s => s.stage_id === stage.id || s.production_stages?.stage_key === stage.stage_key
+                              );
+                              const isCompleted = !!completedStage;
+                              const bipData = completedStage?.production_piece_bip_data?.[0];
+
+                              return (
+                                <div
+                                  key={stage.id}
+                                  className={`rounded-xl border-2 p-3 transition-all ${
+                                    isCompleted
+                                      ? 'border-green-200 bg-green-50'
+                                      : 'border-gray-100 bg-gray-50 opacity-70'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3">
+                                    <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border ${
+                                      isCompleted ? 'bg-green-500 text-white border-green-500' : BIP_COLORS[bip]
+                                    }`}>
+                                      {isCompleted ? <CheckCircle className="w-4 h-4" /> : bip}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="text-sm font-semibold text-gray-800">{stage.stage_name}</span>
+                                        {isCompleted && completedStage && (
+                                          <span className="text-xs text-green-600 flex-shrink-0">
+                                            {new Date(completedStage.completed_at).toLocaleDateString('pt-BR')} {new Date(completedStage.completed_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                          </span>
+                                        )}
+                                        {!isCompleted && (
+                                          <span className="text-xs text-gray-400 flex items-center gap-1">
+                                            <Clock className="w-3 h-3" />
+                                            Aguardando
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {isCompleted && completedStage && (
+                                        <div className="mt-1.5 space-y-1">
+                                          {completedStage.completed_by && completedStage.completed_by !== 'Sistema' && (
+                                            <div className="text-xs text-gray-600">
+                                              <span className="font-medium">Responsavel:</span> {completedStage.completed_by}
+                                            </div>
+                                          )}
+                                          {completedStage.notes && (
+                                            <div className="text-xs text-gray-600">
+                                              <span className="font-medium">Obs:</span> {completedStage.notes}
+                                            </div>
+                                          )}
+
+                                          {bipData && bip === 2 && (
+                                            <div className="bg-white rounded-lg p-2 border border-green-200 text-xs space-y-0.5 mt-1">
+                                              {bipData.recipes?.name && (
+                                                <div><span className="font-medium text-blue-700">Traco:</span> {bipData.recipes.name}</div>
+                                              )}
+                                              {bipData.corpo_de_prova_number && (
+                                                <div><span className="font-medium">CP:</span> #{bipData.corpo_de_prova_number}</div>
+                                              )}
+                                              {bipData.ambient_temperature != null && (
+                                                <div><span className="font-medium">Temperatura:</span> {bipData.ambient_temperature}°C</div>
+                                              )}
+                                              {bipData.cement_supplier && (
+                                                <div><span className="font-medium">Fornecedor cimento:</span> {bipData.cement_supplier}</div>
+                                              )}
+                                            </div>
+                                          )}
+
+                                          {bipData && bip === 4 && (
+                                            <div className="bg-white rounded-lg p-2 border border-green-200 text-xs space-y-0.5 mt-1">
+                                              {bipData.inspector_name && (
+                                                <div><span className="font-medium">Inspetor:</span> {bipData.inspector_name}</div>
+                                              )}
+                                              <div className="flex gap-3 mt-1">
+                                                <span className={bipData.checklist_dimensions_ok ? 'text-green-600' : 'text-red-500'}>
+                                                  {bipData.checklist_dimensions_ok ? '✓' : '✗'} Dimensoes
+                                                </span>
+                                                <span className={bipData.checklist_finish_ok ? 'text-green-600' : 'text-red-500'}>
+                                                  {bipData.checklist_finish_ok ? '✓' : '✗'} Acabamento
+                                                </span>
+                                                <span className={bipData.checklist_inserts_ok ? 'text-green-600' : 'text-red-500'}>
+                                                  {bipData.checklist_inserts_ok ? '✓' : '✗'} Insertos
+                                                </span>
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          {bipData && bip === 5 && (
+                                            <div className="bg-white rounded-lg p-2 border border-green-200 text-xs space-y-0.5 mt-1">
+                                              {bipData.truck_plate && (
+                                                <div><span className="font-medium">Placa:</span> {bipData.truck_plate}</div>
+                                              )}
+                                              {bipData.driver_name && (
+                                                <div><span className="font-medium">Motorista:</span> {bipData.driver_name}</div>
+                                              )}
+                                              {bipData.romaneio_number && (
+                                                <div><span className="font-medium">Romaneio:</span> {bipData.romaneio_number}</div>
+                                              )}
+                                            </div>
+                                          )}
+
+                                          {bipData && bip === 6 && (
+                                            <div className="bg-white rounded-lg p-2 border border-green-200 text-xs space-y-0.5 mt-1">
+                                              {bipData.foundation_reference && (
+                                                <div><span className="font-medium">Fundacao/Calice:</span> {bipData.foundation_reference}</div>
+                                              )}
+                                              {bipData.installer_name && (
+                                                <div><span className="font-medium">Instalador:</span> {bipData.installer_name}</div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+
+                                      {!isCompleted && stage.description && (
+                                        <div className="text-xs text-gray-400 mt-0.5">{stage.description}</div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
-                        {record.recipe_name && (
-                          <div className="text-xs text-gray-500 mb-2">Traco: {record.recipe_name}</div>
-                        )}
-                        {(record.product_tracking_stages || []).length > 0 && (
-                          <div className="space-y-1.5 mt-2">
-                            {(record.product_tracking_stages || []).map((stage) => (
-                              <div key={stage.id} className="flex items-center gap-2 text-xs">
-                                <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
-                                <span className="text-gray-600 capitalize">
-                                  {stage.production_stages?.stage_key?.replace(/_/g, ' ') || 'Etapa'}
-                                </span>
-                                <span className="text-gray-400 ml-auto">
-                                  {new Date(stage.completed_at).toLocaleDateString('pt-BR')}
-                                </span>
-                                {stage.completed_by && (
-                                  <span className="text-gray-400">{stage.completed_by}</span>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))
+                      )}
+                    </>
                   )}
                 </div>
               )}
@@ -793,13 +1053,26 @@ export default function ProductionItemDetail({ item, order, onClose, onGenerateL
         </div>
 
         <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between flex-shrink-0">
-          <button
-            onClick={() => onGenerateLabel(order, item)}
-            className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            <QrCode className="w-4 h-4" />
-            Gerar Etiqueta QR
-          </button>
+          <div className="flex items-center gap-2">
+            {subOrders.length > 0 && selectedSubOrder && (
+              <button
+                onClick={() => handlePrintSingleQR(selectedSubOrder)}
+                className="flex items-center gap-2 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg border border-gray-200 transition-colors"
+              >
+                <Printer className="w-4 h-4" />
+                Etiqueta Peca {selectedSubOrder.sequence_number}
+              </button>
+            )}
+            {subOrders.length > 0 && (
+              <button
+                onClick={handlePrintAllQR}
+                className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                <QrCode className="w-4 h-4" />
+                Imprimir Todas ({subOrders.length})
+              </button>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="text-sm text-gray-500 hover:text-gray-700 px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
