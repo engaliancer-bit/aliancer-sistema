@@ -257,24 +257,68 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         });
       }
 
+      const allProductIds = new Set<string>();
+      for (const qi of quoteItems) {
+        if (qi.item_type === 'product') {
+          const product = Array.isArray(qi.products) ? qi.products[0] : qi.products;
+          const pid = product?.id || qi.product_id;
+          if (pid) allProductIds.add(pid);
+        } else if (qi.item_type === 'composition' && qi.composition_id) {
+          const subItems = compositionItemsMap.get(qi.composition_id) || [];
+          for (const ci of subItems) {
+            const product = Array.isArray(ci.products) ? ci.products[0] : ci.products;
+            if (product?.id) allProductIds.add(product.id);
+          }
+        }
+      }
+
+      const stockMap = new Map<string, number>();
+      if (allProductIds.size > 0) {
+        const { data: stockData } = await supabase
+          .from('product_stock_view')
+          .select('product_id, available_stock')
+          .in('product_id', [...allProductIds]);
+
+        (stockData || []).forEach((row: any) => {
+          stockMap.set(row.product_id, Math.max(0, parseFloat(String(row.available_stock)) || 0));
+        });
+      }
+
       const itemsToInsert: any[] = [];
+      const skippedItems: string[] = [];
+      const reducedItems: { name: string; requested: number; stock: number; toProduuce: number }[] = [];
 
       for (const qi of quoteItems) {
         const quoteQty = parseFloat(String(qi.quantity)) || 0;
 
         if (qi.item_type === 'product') {
           const product = Array.isArray(qi.products) ? qi.products[0] : qi.products;
+          const pid = product?.id || qi.product_id;
+          const availableStock = pid ? (stockMap.get(pid) ?? 0) : 0;
+          const qtyToProduce = Math.max(0, quoteQty - availableStock);
+
+          if (qtyToProduce === 0) {
+            skippedItems.push(product?.name || 'Produto');
+            continue;
+          }
+
+          if (qtyToProduce < quoteQty) {
+            reducedItems.push({ name: product?.name || 'Produto', requested: quoteQty, stock: availableStock, toProduuce: qtyToProduce });
+          }
+
           itemsToInsert.push({
             production_order_id: order.id,
             quote_item_id: qi.id,
             item_type: 'product',
-            product_id: product?.id || qi.product_id,
+            product_id: pid,
             material_id: null,
             composition_id: null,
-            quantity: quoteQty,
+            quantity: qtyToProduce,
             produced_quantity: 0,
             unit_price: parseFloat(String(qi.proposed_price)) || 0,
-            notes: 'Sincronizado automaticamente do orcamento',
+            notes: availableStock > 0
+              ? `Estoque disponivel: ${availableStock} | Orcamento: ${quoteQty} | A produzir: ${qtyToProduce}`
+              : 'Sincronizado automaticamente do orcamento',
           });
         } else if (qi.item_type === 'composition' && qi.composition_id) {
           const subItems = compositionItemsMap.get(qi.composition_id) || [];
@@ -282,6 +326,18 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
             const product = Array.isArray(ci.products) ? ci.products[0] : ci.products;
             if (!product?.id) continue;
             const subQty = quoteQty * (parseFloat(String(ci.quantity)) || 1);
+            const availableStock = stockMap.get(product.id) ?? 0;
+            const qtyToProduce = Math.max(0, subQty - availableStock);
+
+            if (qtyToProduce === 0) {
+              skippedItems.push(product.name);
+              continue;
+            }
+
+            if (qtyToProduce < subQty) {
+              reducedItems.push({ name: product.name, requested: subQty, stock: availableStock, toProduuce: qtyToProduce });
+            }
+
             itemsToInsert.push({
               production_order_id: order.id,
               quote_item_id: qi.id,
@@ -289,18 +345,15 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               product_id: product.id,
               material_id: null,
               composition_id: null,
-              quantity: subQty,
+              quantity: qtyToProduce,
               produced_quantity: 0,
               unit_price: parseFloat(String(ci.unit_price)) || 0,
-              notes: `Composicao: ${qi.compositions?.name || 'Sem nome'}`,
+              notes: availableStock > 0
+                ? `Composicao: ${qi.compositions?.name || 'Sem nome'} | Estoque: ${availableStock} | A produzir: ${qtyToProduce}`
+                : `Composicao: ${qi.compositions?.name || 'Sem nome'}`,
             });
           }
         }
-      }
-
-      if (itemsToInsert.length === 0) {
-        alert('Nenhum produto para producao encontrado no orcamento (itens do tipo insumo/servico sao ignorados).');
-        return;
       }
 
       const itemsToDelete = hasProduced
@@ -314,6 +367,15 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
           .in('id', itemsToDelete);
       }
 
+      if (itemsToInsert.length === 0) {
+        const msg = skippedItems.length > 0
+          ? `Todos os itens ja estao cobertos pelo estoque disponivel:\n\n${skippedItems.map(n => `• ${n}`).join('\n')}\n\nNenhum item adicionado a OP.`
+          : 'Nenhum produto para producao encontrado no orcamento (itens do tipo insumo/servico sao ignorados).';
+        alert(msg);
+        await loadData();
+        return;
+      }
+
       const { error } = await supabase
         .from('production_order_items')
         .insert(itemsToInsert);
@@ -325,6 +387,15 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         .from('production_orders')
         .update({ total_quantity: totalQty, remaining_quantity: totalQty })
         .eq('id', order.id);
+
+      let summaryMsg = `Sincronizacao concluida! ${itemsToInsert.length} item(ns) adicionado(s) a OP.`;
+      if (skippedItems.length > 0) {
+        summaryMsg += `\n\nItens cobertos pelo estoque (nao adicionados):\n${skippedItems.map(n => `• ${n}`).join('\n')}`;
+      }
+      if (reducedItems.length > 0) {
+        summaryMsg += `\n\nItens com quantidade reduzida pelo estoque:\n${reducedItems.map(r => `• ${r.name}: solicitado ${r.requested}, estoque ${r.stock}, a produzir ${r.toProduuce}`).join('\n')}`;
+      }
+      alert(summaryMsg);
 
       await loadData();
     } catch (err: any) {
@@ -1220,6 +1291,13 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                                     {fmtQty(item.produced_quantity)}/{fmtQty(item.quantity)} {itemUnit}
                                     <span className="ml-2 text-gray-400">({itemProgress}%)</span>
                                   </div>
+                                  {item.notes && item.notes.includes('Estoque disponivel:') && (
+                                    <div className="mt-1 text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md inline-block border border-amber-100">
+                                      {item.notes.split(' | ').map((part, i) => (
+                                        <span key={i} className={i > 0 ? 'ml-2' : ''}>{part}</span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
 
                                 <div className="flex items-center gap-2 flex-shrink-0">
