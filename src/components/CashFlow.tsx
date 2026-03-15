@@ -542,7 +542,7 @@ export default function CashFlow({ businessUnit = 'factory' }: CashFlowProps) {
         if (error) throw error;
 
         if (entryData.construction_work_id) {
-          await supabase
+          const { error: wiUpsertError } = await supabase
             .from('construction_work_items')
             .upsert({
               work_id: entryData.construction_work_id,
@@ -557,6 +557,7 @@ export default function CashFlow({ businessUnit = 'factory' }: CashFlowProps) {
               source_type: 'expense',
               added_date: entryData.date,
             }, { onConflict: 'cash_flow_id', ignoreDuplicates: false });
+          if (wiUpsertError) throw wiUpsertError;
         }
       } else {
         const { data: inserted, error } = await supabase
@@ -568,7 +569,7 @@ export default function CashFlow({ businessUnit = 'factory' }: CashFlowProps) {
         if (error) throw error;
 
         if (entryData.construction_work_id && inserted?.id) {
-          await supabase
+          const { error: wiError } = await supabase
             .from('construction_work_items')
             .insert({
               work_id: entryData.construction_work_id,
@@ -583,6 +584,7 @@ export default function CashFlow({ businessUnit = 'factory' }: CashFlowProps) {
               source_type: 'expense',
               added_date: entryData.date,
             });
+          if (wiError) throw wiError;
         }
       }
 
