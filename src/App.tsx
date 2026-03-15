@@ -106,7 +106,7 @@ const engineeringTabs = [
 
 const constructionTabs = [
   { id: 'const-customers' as ConstructionTab, label: 'Clientes', icon: UserPlus },
-  { id: 'const-budgets' as ConstructionTab, label: 'Orcamentos', icon: FileSpreadsheet },
+  { id: 'const-budgets' as ConstructionTab, label: 'Orcamentos de Obras', icon: FileSpreadsheet },
   { id: 'const-projects' as ConstructionTab, label: 'Obras', icon: HardHat },
   { id: 'const-assembly' as ConstructionTab, label: 'Montagem de Estrutura', icon: Layers },
   { id: 'const-finance' as ConstructionTab, label: 'Financeiro', icon: DollarSign },

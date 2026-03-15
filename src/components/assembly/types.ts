@@ -34,6 +34,7 @@ export interface AssemblyProject {
   id: string;
   name: string;
   quote_id: string | null;
+  budget_id: string | null;
   customer_id: string | null;
   status: 'planning' | 'in_progress' | 'completed' | 'cancelled';
   start_date: string | null;
@@ -44,6 +45,7 @@ export interface AssemblyProject {
   updated_at: string;
   customer?: { name: string } | null;
   quote?: { quote_number: string; total_value: number } | null;
+  budget?: { title: string; grand_total: number } | null;
   stages?: AssemblyStage[];
 }
 
@@ -67,12 +69,13 @@ export interface AssemblyStage {
 export interface AssemblyStageItem {
   id: string;
   assembly_stage_id: string;
-  item_type: 'material' | 'product' | 'equipment';
+  item_type: 'material' | 'product' | 'equipment' | 'composition';
   item_name: string;
   quantity: number;
   unit: string;
   product_id: string | null;
   material_id: string | null;
+  composition_id: string | null;
   status: 'pending' | 'available' | 'sent' | 'used';
   sent_at: string | null;
   notes: string;

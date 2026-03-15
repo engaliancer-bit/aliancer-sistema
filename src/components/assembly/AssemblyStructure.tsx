@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, HardHat, Calendar, Clock, AlertCircle, Edit2, Trash2, X, Check, Layers } from 'lucide-react';
+import { Plus, HardHat, Calendar, Clock, AlertCircle, Edit2, Trash2, X, Check, Layers, CheckCircle2, FileSpreadsheet } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import type { AssemblyProject } from './types';
 import AssemblyTemplates from './AssemblyTemplates';
@@ -22,7 +22,7 @@ function Toast({ message, type, onClose }: { message: string; type: 'error' | 's
 const STATUS_CONFIG: Record<AssemblyProject['status'], { label: string; badge: string; dot: string }> = {
   planning: { label: 'Planejamento', badge: 'bg-gray-100 text-gray-600', dot: 'bg-gray-400' },
   in_progress: { label: 'Em Andamento', badge: 'bg-orange-100 text-orange-700', dot: 'bg-orange-500' },
-  completed: { label: 'Concluída', badge: 'bg-green-100 text-green-700', dot: 'bg-green-500' },
+  completed: { label: 'Concluida', badge: 'bg-green-100 text-green-700', dot: 'bg-green-500' },
   cancelled: { label: 'Cancelada', badge: 'bg-red-100 text-red-600', dot: 'bg-red-400' },
 };
 
@@ -31,9 +31,17 @@ interface ProjectFormData {
   status: AssemblyProject['status'];
   customer_id: string;
   quote_id: string;
+  budget_id: string;
   start_date: string;
   expected_end_date: string;
   notes: string;
+}
+
+interface BudgetOption {
+  id: string;
+  title: string;
+  grand_total: number;
+  customer_name: string;
 }
 
 interface ProjectFormProps {
@@ -42,14 +50,16 @@ interface ProjectFormProps {
   onCancel: () => void;
   customers: { id: string; name: string }[];
   quotes: { id: string; quote_number: string; total_value: number }[];
+  budgets: BudgetOption[];
 }
 
-function ProjectForm({ initial, onSave, onCancel, customers, quotes }: ProjectFormProps) {
+function ProjectForm({ initial, onSave, onCancel, customers, quotes, budgets }: ProjectFormProps) {
   const [form, setForm] = useState<ProjectFormData>({
     name: initial?.name ?? '',
     status: initial?.status ?? 'planning',
     customer_id: initial?.customer_id ?? '',
     quote_id: initial?.quote_id ?? '',
+    budget_id: initial?.budget_id ?? '',
     start_date: initial?.start_date ?? '',
     expected_end_date: initial?.expected_end_date ?? '',
     notes: initial?.notes ?? '',
@@ -63,6 +73,9 @@ function ProjectForm({ initial, onSave, onCancel, customers, quotes }: ProjectFo
     await onSave(form);
     setSaving(false);
   };
+
+  const fmtBRL = (v: number) =>
+    new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v ?? 0);
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -87,21 +100,6 @@ function ProjectForm({ initial, onSave, onCancel, customers, quotes }: ProjectFo
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Orçamento vinculado</label>
-          <select
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
-            value={form.quote_id}
-            onChange={e => setForm(f => ({ ...f, quote_id: e.target.value }))}
-          >
-            <option value="">Nenhum</option>
-            {quotes.map(q => (
-              <option key={q.id} value={q.id}>
-                #{q.quote_number} — {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(q.total_value ?? 0)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
           <select
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
@@ -114,7 +112,43 @@ function ProjectForm({ initial, onSave, onCancel, customers, quotes }: ProjectFo
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Data de início</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">
+            Orcamento de Obra (Construtora)
+          </label>
+          <select
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            value={form.budget_id}
+            onChange={e => setForm(f => ({ ...f, budget_id: e.target.value, quote_id: '' }))}
+          >
+            <option value="">Nenhum</option>
+            {budgets.map(b => (
+              <option key={b.id} value={b.id}>
+                {b.title} — {fmtBRL(b.grand_total)}{b.customer_name ? ` (${b.customer_name})` : ''}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-400 mt-1">Orcamentos aprovados no modulo Construtora</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">
+            Orcamento Industria (opcional)
+          </label>
+          <select
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            value={form.quote_id}
+            onChange={e => setForm(f => ({ ...f, quote_id: e.target.value, budget_id: '' }))}
+          >
+            <option value="">Nenhum</option>
+            {quotes.map(q => (
+              <option key={q.id} value={q.id}>
+                #{q.quote_number} — {fmtBRL(q.total_value ?? 0)}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-400 mt-1">Orcamentos do modulo Industria de Artefatos</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Data de inicio</label>
           <input
             type="date"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
@@ -122,7 +156,7 @@ function ProjectForm({ initial, onSave, onCancel, customers, quotes }: ProjectFo
             onChange={e => setForm(f => ({ ...f, start_date: e.target.value }))}
           />
         </div>
-        <div className="sm:col-span-2">
+        <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Prazo previsto</label>
           <input
             type="date"
@@ -134,7 +168,7 @@ function ProjectForm({ initial, onSave, onCancel, customers, quotes }: ProjectFo
       </div>
       <textarea
         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 resize-none"
-        placeholder="Observações (opcional)"
+        placeholder="Observacoes (opcional)"
         rows={2}
         value={form.notes}
         onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
@@ -164,6 +198,8 @@ function ProjectCard({ project, onOpen, onEdit, onDelete }: ProjectCardProps) {
   const inProg = stages.filter(s => s.status === 'in_progress').length;
   const progress = total > 0 ? Math.round((done / total) * 100) : 0;
 
+  const hasBudget = (project as any).budget_id;
+
   return (
     <div
       className="bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group"
@@ -181,7 +217,14 @@ function ProjectCard({ project, onOpen, onEdit, onDelete }: ProjectCardProps) {
             </div>
             {project.customer && <p className="text-sm text-gray-500 mt-0.5">{project.customer.name}</p>}
             {project.quote && (
-              <p className="text-xs text-gray-400 mt-0.5">Orçamento #{project.quote.quote_number}</p>
+              <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
+                Orcamento Industria #{project.quote.quote_number}
+              </p>
+            )}
+            {hasBudget && (
+              <p className="text-xs text-blue-500 mt-0.5 flex items-center gap-1">
+                <FileSpreadsheet className="w-3 h-3" /> Orcamento de Obra vinculado
+              </p>
             )}
           </div>
           <div className="flex gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
@@ -205,7 +248,7 @@ function ProjectCard({ project, onOpen, onEdit, onDelete }: ProjectCardProps) {
           </div>
           <div className="bg-green-50 rounded-lg py-2">
             <p className="text-lg font-bold text-green-600">{done}</p>
-            <p className="text-xs text-green-400">Concluídas</p>
+            <p className="text-xs text-green-400">Concluidas</p>
           </div>
         </div>
 
@@ -226,7 +269,7 @@ function ProjectCard({ project, onOpen, onEdit, onDelete }: ProjectCardProps) {
 
         <div className="mt-3 flex items-center gap-4 text-xs text-gray-400 flex-wrap">
           {project.start_date && (
-            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />Início: {new Date(project.start_date + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
+            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />Inicio: {new Date(project.start_date + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
           )}
           {project.expected_end_date && (
             <span className="flex items-center gap-1"><Clock className="w-3 h-3" />Prazo: {new Date(project.expected_end_date + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
@@ -248,6 +291,7 @@ export default function AssemblyStructure() {
   const [openProject, setOpenProject] = useState<AssemblyProject | null>(null);
   const [customers, setCustomers] = useState<{ id: string; name: string }[]>([]);
   const [quotes, setQuotes] = useState<{ id: string; quote_number: string; total_value: number }[]>([]);
+  const [budgets, setBudgets] = useState<BudgetOption[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
   const [filterStatus, setFilterStatus] = useState<AssemblyProject['status'] | 'all'>('all');
 
@@ -263,12 +307,13 @@ export default function AssemblyStructure() {
 
       if (projErr) throw projErr;
 
-      const { data: stages, error: stgErr } = await supabase
-        .from('assembly_stages')
-        .select('id, assembly_project_id, status, stage_order')
-        .in('assembly_project_id', (projectsData ?? []).map(p => p.id));
-
-      if (stgErr) throw stgErr;
+      const ids = (projectsData ?? []).map(p => p.id);
+      const { data: stages } = ids.length > 0
+        ? await supabase
+            .from('assembly_stages')
+            .select('id, assembly_project_id, status, stage_order')
+            .in('assembly_project_id', ids)
+        : { data: [] };
 
       const projectsWithStages = (projectsData ?? []).map(p => ({
         ...p,
@@ -284,12 +329,23 @@ export default function AssemblyStructure() {
   }, []);
 
   const loadRelated = useCallback(async () => {
-    const [{ data: cust }, { data: qts }] = await Promise.all([
+    const [{ data: cust }, { data: qts }, { data: bud }] = await Promise.all([
       supabase.from('customers').select('id, name').order('name'),
       supabase.from('quotes').select('id, quote_number, total_value').order('created_at', { ascending: false }),
+      supabase
+        .from('budgets')
+        .select('id, title, grand_total, customers(name)')
+        .in('status', ['aprovado', 'em_andamento', 'fechado'])
+        .order('created_at', { ascending: false }),
     ]);
     setCustomers(cust ?? []);
     setQuotes(qts ?? []);
+    setBudgets((bud ?? []).map((b: any) => ({
+      id: b.id,
+      title: b.title,
+      grand_total: b.grand_total ?? 0,
+      customer_name: b.customers?.name ?? '',
+    })));
   }, []);
 
   useEffect(() => {
@@ -306,16 +362,62 @@ export default function AssemblyStructure() {
       };
       if (data.customer_id) payload.customer_id = data.customer_id;
       if (data.quote_id) payload.quote_id = data.quote_id;
+      if (data.budget_id) payload.budget_id = data.budget_id;
       if (data.start_date) payload.start_date = data.start_date;
       if (data.expected_end_date) payload.expected_end_date = data.expected_end_date;
 
-      const { error } = await supabase.from('assembly_projects').insert(payload);
+      const { data: inserted, error } = await supabase.from('assembly_projects').insert(payload).select().maybeSingle();
       if (error) throw error;
+
+      if (inserted && data.budget_id) {
+        await importStagesFromBudget(inserted.id, data.budget_id);
+      }
+
       setShowForm(false);
       showToast('Projeto criado com sucesso!', 'success');
       await loadProjects();
     } catch {
       showToast('Erro ao criar projeto.', 'error');
+    }
+  };
+
+  const importStagesFromBudget = async (projectId: string, budgetId: string) => {
+    const { data: budgetStages } = await supabase
+      .from('budget_stages')
+      .select('*, items:budget_stage_items(*)')
+      .eq('budget_id', budgetId)
+      .order('stage_order');
+
+    if (!budgetStages || budgetStages.length === 0) return;
+
+    for (const bs of budgetStages) {
+      const { data: newStage } = await supabase
+        .from('assembly_stages')
+        .insert({
+          assembly_project_id: projectId,
+          budget_stage_id: bs.id,
+          name: bs.name,
+          description: bs.description || '',
+          stage_order: bs.stage_order,
+          notes: bs.notes || '',
+        })
+        .select()
+        .maybeSingle();
+
+      if (newStage && bs.items && bs.items.length > 0) {
+        const itemsToInsert = bs.items.map((item: any) => ({
+          assembly_stage_id: newStage.id,
+          item_type: item.item_type === 'mao_de_obra' ? 'equipment' : item.item_type,
+          item_name: item.item_name,
+          quantity: item.quantity,
+          unit: item.unit,
+          product_id: item.product_id || null,
+          material_id: item.material_id || null,
+          composition_id: item.composition_id || null,
+          notes: item.notes || '',
+        }));
+        await supabase.from('assembly_stage_items').insert(itemsToInsert);
+      }
     }
   };
 
@@ -329,6 +431,7 @@ export default function AssemblyStructure() {
         updated_at: new Date().toISOString(),
         customer_id: data.customer_id || null,
         quote_id: data.quote_id || null,
+        budget_id: data.budget_id || null,
         start_date: data.start_date || null,
         expected_end_date: data.expected_end_date || null,
       };
@@ -343,11 +446,11 @@ export default function AssemblyStructure() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Excluir este projeto? Todas as etapas e itens serão removidos.')) return;
+    if (!confirm('Excluir este projeto? Todas as etapas e itens serao removidos.')) return;
     try {
       const { error } = await supabase.from('assembly_projects').delete().eq('id', id);
       if (error) throw error;
-      showToast('Projeto excluído.', 'success');
+      showToast('Projeto excluido.', 'success');
       await loadProjects();
     } catch {
       showToast('Erro ao excluir projeto.', 'error');
@@ -377,9 +480,9 @@ export default function AssemblyStructure() {
     <div className="space-y-6">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
-      {(editingProject) && (
+      {editingProject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-40">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between p-5 border-b border-gray-100">
               <h3 className="font-bold text-gray-900">Editar Projeto</h3>
               <button onClick={() => setEditingProject(null)} className="p-1.5 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100">
@@ -393,6 +496,7 @@ export default function AssemblyStructure() {
                   status: editingProject.status,
                   customer_id: editingProject.customer_id ?? '',
                   quote_id: editingProject.quote_id ?? '',
+                  budget_id: (editingProject as any).budget_id ?? '',
                   start_date: editingProject.start_date ?? '',
                   expected_end_date: editingProject.expected_end_date ?? '',
                   notes: editingProject.notes,
@@ -401,6 +505,7 @@ export default function AssemblyStructure() {
                 onCancel={() => setEditingProject(null)}
                 customers={customers}
                 quotes={quotes}
+                budgets={budgets}
               />
             </div>
           </div>
@@ -449,11 +554,15 @@ export default function AssemblyStructure() {
           {showForm && (
             <div className="bg-orange-50 border border-orange-200 rounded-2xl p-5">
               <h3 className="font-semibold text-orange-800 mb-4">Nova Obra de Montagem</h3>
+              <p className="text-xs text-orange-600 mb-4">
+                Ao vincular um Orcamento de Obra aprovado, as etapas e materiais definidos no orcamento serao importados automaticamente.
+              </p>
               <ProjectForm
                 onSave={handleCreate}
                 onCancel={() => setShowForm(false)}
                 customers={customers}
                 quotes={quotes}
+                budgets={budgets}
               />
             </div>
           )}
@@ -487,7 +596,7 @@ export default function AssemblyStructure() {
             <div className="text-center py-16 text-gray-400 border-2 border-dashed border-gray-200 rounded-2xl">
               <HardHat className="w-12 h-12 mx-auto mb-3 opacity-30" />
               <p className="font-medium">{filterStatus === 'all' ? 'Nenhum projeto criado.' : 'Nenhum projeto com este status.'}</p>
-              <p className="text-sm mt-1">Crie uma nova obra para começar a gerenciar as etapas de montagem.</p>
+              <p className="text-sm mt-1">Crie uma nova obra para comecar a gerenciar as etapas de montagem.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

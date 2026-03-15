@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, Plus, Check, Clock, CheckCircle2, AlertCircle, Edit2, Trash2, ChevronDown, ChevronRight, Package, Wrench, HardHat, X, Calendar, User, Layers } from 'lucide-react';
+import { ArrowLeft, Plus, Check, Clock, CheckCircle2, AlertCircle, Edit2, Trash2, ChevronDown, ChevronRight, Package, Wrench, HardHat, X, Calendar, User, Layers, BoxSelect } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import type { AssemblyProject, AssemblyStage, AssemblyStageItem, AssemblyTemplate } from './types';
 
 const ITEM_TYPE_CONFIG = {
-  material: { label: 'Material', icon: Package, color: 'bg-blue-100 text-blue-700 border-blue-200' },
-  product: { label: 'Produto', icon: HardHat, color: 'bg-orange-100 text-orange-700 border-orange-200' },
-  equipment: { label: 'Equipamento', icon: Wrench, color: 'bg-green-100 text-green-700 border-green-200' },
-};
+  material: { label: 'Insumo', icon: Package, color: 'bg-blue-100 text-blue-700 border-blue-200', section: 'materials' },
+  product: { label: 'Produto', icon: BoxSelect, color: 'bg-orange-100 text-orange-700 border-orange-200', section: 'materials' },
+  composition: { label: 'Composicao', icon: Layers, color: 'bg-amber-100 text-amber-700 border-amber-200', section: 'materials' },
+  equipment: { label: 'Equipamento', icon: Wrench, color: 'bg-green-100 text-green-700 border-green-200', section: 'checklist' },
+} as const;
 
 const ITEM_STATUS_CONFIG = {
   pending: { label: 'Pendente', color: 'bg-gray-100 text-gray-600' },
@@ -29,7 +30,7 @@ interface StageItemRowProps {
 }
 
 function StageItemRow({ item, onUpdateStatus, onDelete }: StageItemRowProps) {
-  const typeConfig = ITEM_TYPE_CONFIG[item.item_type];
+  const typeConfig = ITEM_TYPE_CONFIG[item.item_type] ?? ITEM_TYPE_CONFIG.material;
   const TypeIcon = typeConfig.icon;
   const statusConfig = ITEM_STATUS_CONFIG[item.status];
   const nextStatus: Record<AssemblyStageItem['status'], AssemblyStageItem['status']> = {
@@ -66,7 +67,7 @@ interface AddItemFormProps {
 
 function AddItemForm({ onSave, onCancel }: AddItemFormProps) {
   const [form, setForm] = useState({
-    item_type: 'material' as 'material' | 'product' | 'equipment',
+    item_type: 'material' as AssemblyStageItem['item_type'],
     item_name: '',
     quantity: 1,
     unit: 'un',
@@ -74,6 +75,7 @@ function AddItemForm({ onSave, onCancel }: AddItemFormProps) {
     status: 'pending' as AssemblyStageItem['status'],
     product_id: null as string | null,
     material_id: null as string | null,
+    composition_id: null as string | null,
   });
   const [saving, setSaving] = useState(false);
 
@@ -220,35 +222,62 @@ function StageCard({ stage, onUpdateStatus, onUpdate, onDelete, onAddItem, onUpd
       </div>
 
       {expanded && (
-        <div className="border-t border-current border-opacity-10 px-4 pb-4 space-y-2 bg-white bg-opacity-50">
-          {stage.items && stage.items.length > 0 ? (
-            <div className="space-y-1.5 pt-3">
-              {stage.items.map(item => (
-                <StageItemRow
-                  key={item.id}
-                  item={item}
-                  onUpdateStatus={onUpdateItemStatus}
-                  onDelete={onDeleteItem}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-400 italic pt-3">Nenhum item nesta etapa.</p>
-          )}
+        <div className="border-t border-current border-opacity-10 px-4 pb-4 bg-white bg-opacity-50">
+          {(() => {
+            const materialItems = stage.items?.filter(i => ITEM_TYPE_CONFIG[i.item_type]?.section === 'materials') ?? [];
+            const checklistItems = stage.items?.filter(i => ITEM_TYPE_CONFIG[i.item_type]?.section === 'checklist') ?? [];
+            const hasAny = materialItems.length > 0 || checklistItems.length > 0;
+            return (
+              <>
+                {hasAny ? (
+                  <div className="pt-3 space-y-4">
+                    {materialItems.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                          <Package className="w-3 h-3" /> Materiais e Insumos
+                        </p>
+                        <div className="space-y-1.5">
+                          {materialItems.map(item => (
+                            <StageItemRow key={item.id} item={item} onUpdateStatus={onUpdateItemStatus} onDelete={onDeleteItem} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {checklistItems.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                          <Wrench className="w-3 h-3" /> Equipamentos e Ferramentas
+                        </p>
+                        <div className="space-y-1.5">
+                          {checklistItems.map(item => (
+                            <StageItemRow key={item.id} item={item} onUpdateStatus={onUpdateItemStatus} onDelete={onDeleteItem} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400 italic pt-3">Nenhum item nesta etapa.</p>
+                )}
+              </>
+            );
+          })()}
 
-          {addingItem ? (
-            <AddItemForm
-              onSave={(data) => onAddItem(stage.id, data)}
-              onCancel={() => setAddingItem(false)}
-            />
-          ) : (
-            <button
-              onClick={() => setAddingItem(true)}
-              className="flex items-center gap-1.5 text-xs text-orange-600 hover:text-orange-700 font-medium py-1"
-            >
-              <Plus className="w-3.5 h-3.5" /> Adicionar item
-            </button>
-          )}
+          <div className="pt-2">
+            {addingItem ? (
+              <AddItemForm
+                onSave={(data) => onAddItem(stage.id, data)}
+                onCancel={() => setAddingItem(false)}
+              />
+            ) : (
+              <button
+                onClick={() => setAddingItem(true)}
+                className="flex items-center gap-1.5 text-xs text-orange-600 hover:text-orange-700 font-medium py-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Adicionar item
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
