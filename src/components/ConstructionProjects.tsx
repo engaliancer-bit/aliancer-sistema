@@ -689,6 +689,7 @@ export default function ConstructionProjects() {
         id,
         created_at,
         total_value,
+        quote_type,
         quote_items (id)
       `)
       .eq('customer_id', customerId)
@@ -1991,26 +1992,63 @@ export default function ConstructionProjects() {
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Orçamento Aprovado
                     </label>
-                    <select
-                      value={selectedLinkQuoteId}
-                      onChange={(e) => setSelectedLinkQuoteId(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                    >
-                      <option value="">Selecione um orçamento...</option>
-                      {availableQuotes.map(q => (
-                        <option key={q.id} value={q.id}>
-                          {new Date(q.created_at).toLocaleDateString('pt-BR')} —
-                          R$ {Number(q.total_value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} —
-                          {(q.quote_items?.length || 0)} item(s)
-                        </option>
-                      ))}
-                    </select>
+                    <div className="space-y-2 max-h-60 overflow-y-auto">
+                      {availableQuotes.map(q => {
+                        const isObraFechada = q.quote_type === 'complete_construction';
+                        return (
+                          <label
+                            key={q.id}
+                            className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${
+                              isObraFechada
+                                ? 'opacity-60 cursor-not-allowed border-gray-200 bg-gray-50'
+                                : selectedLinkQuoteId === q.id
+                                  ? 'border-green-500 bg-green-50'
+                                  : 'border-gray-200 hover:border-green-300 hover:bg-green-50'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="linkQuote"
+                              value={q.id}
+                              disabled={isObraFechada}
+                              checked={selectedLinkQuoteId === q.id}
+                              onChange={() => !isObraFechada && setSelectedLinkQuoteId(q.id)}
+                              className="mt-0.5"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-medium text-gray-800">
+                                  {new Date(q.created_at).toLocaleDateString('pt-BR')}
+                                </span>
+                                <span className={`px-2 py-0.5 text-xs font-semibold rounded-full ${
+                                  isObraFechada
+                                    ? 'bg-orange-100 text-orange-700'
+                                    : 'bg-blue-100 text-blue-700'
+                                }`}>
+                                  {isObraFechada ? 'Obra Fechada' : 'Orç. Materiais'}
+                                </span>
+                              </div>
+                              <div className="text-sm text-gray-600 mt-0.5">
+                                R$ {Number(q.total_value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} — {(q.quote_items?.length || 0)} item(s)
+                              </div>
+                              {isObraFechada && (
+                                <div className="text-xs text-orange-600 mt-0.5">
+                                  Orçamentos de Obra Fechada não podem ser vinculados aos Itens da Obra
+                                </div>
+                              )}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                    <p className="text-sm text-amber-800">
-                      Os itens do orçamento selecionado serão adicionados aos Itens da Obra.
-                    </p>
-                  </div>
+                  {selectedLinkQuoteId && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                      <p className="text-sm text-amber-800">
+                        Os itens do orçamento selecionado serão adicionados aos Itens da Obra.
+                      </p>
+                    </div>
+                  )}
                 </>
               )}
             </div>

@@ -125,12 +125,18 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
   const [showWorkLinkDialog, setShowWorkLinkDialog] = useState(false);
   const [customerWorks, setCustomerWorks] = useState<any[]>([]);
   const [selectedWorkId, setSelectedWorkId] = useState<string>('');
+  const [showTypeChangeConfirm, setShowTypeChangeConfirm] = useState(false);
+  const [typeChangeData, setTypeChangeData] = useState<{
+    quoteId: string;
+    worksAffected: Array<{ workName: string; itemCount: number }>;
+    totalItems: number;
+  } | null>(null);
 
   const [formData, setFormData] = useState({
     customer_id: '',
     status: 'pending' as 'pending' | 'approved' | 'rejected',
     notes: '',
-    quote_type: '' as 'complete_construction' | 'materials_only' | '',
+    quote_type: 'materials_only' as 'complete_construction' | 'materials_only' | '',
     structure_type: '',
     structure_description: '',
     square_meters: 0,
@@ -592,7 +598,7 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
         customer_id: '',
         status: 'pending',
         notes: '',
-        quote_type: '',
+        quote_type: 'materials_only',
         structure_type: '',
         structure_description: '',
         square_meters: 0,
@@ -729,6 +735,66 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
       alert('Erro ao alterar status do orçamento. Por favor, tente novamente.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleQuoteTypeChange = async (quoteId: string, newType: 'complete_construction' | 'materials_only') => {
+    if (newType === 'complete_construction') {
+      const { data: linkedItems, error } = await supabase
+        .from('construction_work_items')
+        .select('id, work_id, construction_works(work_name)')
+        .eq('quote_id', quoteId);
+
+      if (error) {
+        console.error('Erro ao verificar itens vinculados:', error);
+        alert('Erro ao verificar itens da obra vinculados a este orçamento.');
+        return;
+      }
+
+      if (linkedItems && linkedItems.length > 0) {
+        const workMap = new Map<string, { workName: string; itemCount: number }>();
+        for (const item of linkedItems) {
+          const workName = (item.construction_works as any)?.work_name || 'Obra sem nome';
+          const existing = workMap.get(item.work_id) || { workName, itemCount: 0 };
+          workMap.set(item.work_id, { ...existing, itemCount: existing.itemCount + 1 });
+        }
+        setTypeChangeData({
+          quoteId,
+          worksAffected: Array.from(workMap.values()),
+          totalItems: linkedItems.length,
+        });
+        setShowTypeChangeConfirm(true);
+        return;
+      }
+    }
+
+    await applyQuoteTypeChange(quoteId, newType);
+  };
+
+  const applyQuoteTypeChange = async (quoteId: string, newType: 'complete_construction' | 'materials_only') => {
+    try {
+      if (newType === 'complete_construction') {
+        const { error: deleteError } = await supabase
+          .from('construction_work_items')
+          .delete()
+          .eq('quote_id', quoteId);
+
+        if (deleteError) throw deleteError;
+      }
+
+      const { error } = await supabase
+        .from('quotes')
+        .update({ quote_type: newType, updated_at: new Date().toISOString() })
+        .eq('id', quoteId);
+
+      if (error) throw error;
+
+      setShowTypeChangeConfirm(false);
+      setTypeChangeData(null);
+      loadData();
+    } catch (err: any) {
+      console.error('Erro ao alterar tipo de orçamento:', err);
+      alert('Erro ao alterar tipo do orçamento: ' + (err.message || 'Erro desconhecido'));
     }
   };
 
@@ -1718,6 +1784,26 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
             </div>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Tipo de Orçamento *
+            </label>
+            <select
+              value={formData.quote_type}
+              onChange={(e) => setFormData({ ...formData, quote_type: e.target.value as 'complete_construction' | 'materials_only' })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0A7EC2] focus:border-transparent"
+              required
+            >
+              <option value="materials_only">Orçamento de Materiais</option>
+              <option value="complete_construction">Obra Fechada</option>
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              {formData.quote_type === 'complete_construction'
+                ? 'Contrato de obra fechada — itens não são importados para o painel de Itens da Obra'
+                : 'Venda de materiais e serviços avulsos'}
+            </p>
+          </div>
+
           {/* Toggle de Congelamento de Preços */}
           {editingId && (
             <div className={`border-2 rounded-lg p-4 ${pricesFrozen ? 'border-amber-400 bg-amber-50' : 'border-gray-200 bg-gray-50'}`}>
@@ -2127,6 +2213,9 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Tipo
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -2278,10 +2367,25 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
                           )}
                         </div>
                       </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <select
+                          value={quote.quote_type || 'materials_only'}
+                          onChange={(e) => handleQuoteTypeChange(quote.id, e.target.value as 'complete_construction' | 'materials_only')}
+                          onClick={(e) => e.stopPropagation()}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-lg border-2 cursor-pointer focus:outline-none ${
+                            quote.quote_type === 'complete_construction'
+                              ? 'bg-orange-100 text-orange-800 border-orange-300'
+                              : 'bg-blue-100 text-blue-800 border-blue-300'
+                          }`}
+                        >
+                          <option value="materials_only">Orç. Materiais</option>
+                          <option value="complete_construction">Obra Fechada</option>
+                        </select>
+                      </td>
                     </tr>
                     {expandedQuotes.has(quote.id) && (
                       <tr>
-                        <td colSpan={7} className="px-6 py-4 bg-gray-50">
+                        <td colSpan={8} className="px-6 py-4 bg-gray-50">
                           {loadingQuoteDetails.has(quote.id) ? (
                             <div className="flex items-center justify-center py-8">
                               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -2859,6 +2963,61 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
             }
           }}
         />
+      )}
+
+      {showTypeChangeConfirm && typeChangeData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+            <div className="p-6">
+              <div className="flex items-start gap-4 mb-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center">
+                  <FileText className="w-5 h-5 text-orange-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Alterar para Obra Fechada</h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Este orçamento possui <strong>{typeChangeData.totalItems} item(s)</strong> vinculados a{' '}
+                    {typeChangeData.worksAffected.length > 1
+                      ? `${typeChangeData.worksAffected.length} obras`
+                      : 'uma obra'}.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-5">
+                <p className="text-sm font-semibold text-orange-800 mb-2">Serão removidos dos Itens da Obra:</p>
+                <ul className="space-y-1">
+                  {typeChangeData.worksAffected.map((w, i) => (
+                    <li key={i} className="text-sm text-orange-700 flex justify-between">
+                      <span>{w.workName}</span>
+                      <span className="font-medium">{w.itemCount} item(s)</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <p className="text-sm text-gray-500 mb-5">
+                Orçamentos do tipo "Obra Fechada" não alimentam o painel de Itens da Obra.
+                Esta ação não pode ser desfeita automaticamente.
+              </p>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setShowTypeChangeConfirm(false); setTypeChangeData(null); }}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => applyQuoteTypeChange(typeChangeData.quoteId, 'complete_construction')}
+                  className="flex-1 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 text-sm font-medium transition-colors"
+                >
+                  Confirmar e Remover Itens
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
