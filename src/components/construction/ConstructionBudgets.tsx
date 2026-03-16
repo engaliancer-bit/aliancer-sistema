@@ -3,10 +3,14 @@ import { supabase } from '../../lib/supabase';
 import {
   Plus, Search, Edit2, Trash2, Eye, FileSpreadsheet,
   X, Save, AlertCircle, Home, Building, Factory, Wheat, Map,
-  Clock, CheckCircle, TrendingUp, Copy, Loader2
+  Clock, CheckCircle, TrendingUp, Copy, Loader2, SlidersHorizontal, Settings
 } from 'lucide-react';
 import { Budget, BudgetType, BUDGET_TYPE_CONFIG, STATUS_CONFIG, fmtBRL } from './types';
 import BudgetDetail from './BudgetDetail';
+import GlobalParamsPanel from './GlobalParamsPanel';
+import BudgetCompositionsPanel from './BudgetCompositionsPanel';
+
+type ModuleTab = 'orcamentos' | 'parametros' | 'composicoes';
 
 const TYPE_ICONS: Record<BudgetType, React.ComponentType<any>> = {
   residencial: Home, comercial: Building, industrial: Factory,
@@ -14,6 +18,7 @@ const TYPE_ICONS: Record<BudgetType, React.ComponentType<any>> = {
 };
 
 export default function ConstructionBudgets() {
+  const [moduleTab, setModuleTab] = useState<ModuleTab>('orcamentos');
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [customers, setCustomers] = useState<{ id: string; name: string; phone: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -271,6 +276,31 @@ export default function ConstructionBudgets() {
 
   return (
     <div className="space-y-6">
+      {/* Module Tabs */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="flex border-b border-gray-200">
+          {([
+            { id: 'orcamentos', label: 'Orcamentos', icon: FileSpreadsheet },
+            { id: 'parametros', label: 'Parametros', icon: SlidersHorizontal },
+            { id: 'composicoes', label: 'Composicoes', icon: Settings },
+          ] as { id: ModuleTab; label: string; icon: React.ComponentType<any> }[]).map(tab => (
+            <button key={tab.id} onClick={() => setModuleTab(tab.id)}
+              className={`flex items-center gap-2 px-5 py-3.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                moduleTab === tab.id
+                  ? 'border-orange-500 text-orange-600 bg-orange-50/40'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+              }`}>
+              <tab.icon className="w-4 h-4" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {moduleTab === 'parametros' && <GlobalParamsPanel />}
+      {moduleTab === 'composicoes' && <BudgetCompositionsPanel />}
+
+      {moduleTab === 'orcamentos' && <>
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
@@ -399,6 +429,8 @@ export default function ConstructionBudgets() {
           })}
         </div>
       )}
+
+      </>}
 
       {/* Clone Modal */}
       {showCloneModal && cloneSource && (

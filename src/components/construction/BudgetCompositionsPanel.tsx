@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { Composition, CompositionItem, fmtBRL } from './types';
 
-interface Material { id: string; name: string; unit: string; resale_price: number | null; unit_cost: number | null; }
+interface Material { id: string; name: string; unit: string; resale_price: number | null; unit_cost: number | null; package_size: number | null; }
 interface Product { id: string; name: string; unit: string; sale_price: number; final_sale_price: number | null; }
 
 const ITEM_TYPE_CONFIG = {
@@ -40,7 +40,7 @@ export default function BudgetCompositionsPanel() {
     setLoading(true);
     const [{ data: comps }, { data: mats }, { data: prods }] = await Promise.all([
       supabase.from('budget_compositions').select('*').order('code'),
-      supabase.from('materials').select('id,name,unit,resale_price,unit_cost').order('name'),
+      supabase.from('materials').select('id,name,unit,resale_price,unit_cost,package_size').order('name'),
       supabase.from('products').select('id,name,unit,sale_price,final_sale_price').order('name'),
     ]);
     setCompositions(comps || []);
@@ -91,9 +91,15 @@ export default function BudgetCompositionsPanel() {
     await load();
   };
 
+  const calcMaterialUnitPrice = (m: Material): number => {
+    const raw = m.resale_price ?? m.unit_cost ?? 0;
+    const pkg = m.package_size ?? 1;
+    return pkg > 1 ? raw / pkg : raw;
+  };
+
   const handleMaterialSelect = (id: string) => {
     const m = materials.find(m => m.id === id);
-    if (m) setItemForm(p => ({ ...p, material_id: id, description: m.name, unit: m.unit, unit_price: m.resale_price || m.unit_cost || 0 }));
+    if (m) setItemForm(p => ({ ...p, material_id: id, description: m.name, unit: m.unit, unit_price: calcMaterialUnitPrice(m) }));
   };
 
   const handleProductSelect = (id: string) => {
@@ -339,7 +345,7 @@ export default function BudgetCompositionsPanel() {
                   <select value={itemForm.material_id} onChange={e => handleMaterialSelect(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
                     <option value="">Selecione...</option>
-                    {materials.map(m => <option key={m.id} value={m.id}>{m.name} ({m.unit}) - {fmtBRL(m.resale_price || m.unit_cost || 0)}</option>)}
+                    {materials.map(m => <option key={m.id} value={m.id}>{m.name} ({m.unit}) - {fmtBRL(calcMaterialUnitPrice(m))}/{m.unit}</option>)}
                   </select>
                 </div>
               )}
