@@ -85,8 +85,22 @@ export default function DeadlineAlerts() {
 
   useEffect(() => {
     loadAlerts();
-    const interval = setInterval(loadAlerts, 300000);
-    return () => clearInterval(interval);
+    let interval: ReturnType<typeof setInterval> | null = setInterval(loadAlerts, 300000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        if (interval) { clearInterval(interval); interval = null; }
+      } else {
+        loadAlerts();
+        if (!interval) interval = setInterval(loadAlerts, 300000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      if (interval) clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [loadAlerts]);
 
   const getAlertColor = (days: number) => {

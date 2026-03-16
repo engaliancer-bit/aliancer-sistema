@@ -1,4 +1,4 @@
-import { useEffect, useRef, ReactNode, memo } from 'react';
+import React, { useEffect, useRef, ReactNode, memo } from 'react';
 
 interface SafeComponentWrapperProps {
   children: ReactNode;
@@ -9,68 +9,42 @@ interface SafeComponentWrapperProps {
 /**
  * Wrapper que garante cleanup completo de componentes
  * Previne memory leaks forçando limpeza ao desmontar
+ * Usa rastreamento local de IDs sem substituir window.setInterval globalmente
  */
 export const SafeComponentWrapper = memo(function SafeComponentWrapper({
   children,
   componentName,
   enableLogging = false
 }: SafeComponentWrapperProps) {
-  const timerIdsRef = useRef<Set<number>>(new Set());
-  const originalSetInterval = useRef(window.setInterval);
-  const originalSetTimeout = useRef(window.setTimeout);
+  const intervalIdsRef = useRef<Set<number>>(new Set());
+  const timeoutIdsRef = useRef<Set<number>>(new Set());
   const isMountedRef = useRef(true);
 
   useEffect(() => {
     isMountedRef.current = true;
 
     if (enableLogging) {
-      console.log(`✅ ${componentName} montado`);
+      console.log(`[${componentName}] montado`);
     }
-
-    // Interceptar setInterval/setTimeout para rastrear
-    const originalInterval = window.setInterval;
-    const originalTimeout = window.setTimeout;
-
-    window.setInterval = ((...args: any[]) => {
-      const id = originalInterval(...args) as unknown as number;
-      timerIdsRef.current.add(id);
-      if (enableLogging) {
-        console.log(`⏰ ${componentName} criou interval ${id}`);
-      }
-      return id;
-    }) as typeof window.setInterval;
-
-    window.setTimeout = ((...args: any[]) => {
-      const id = originalTimeout(...args) as unknown as number;
-      timerIdsRef.current.add(id);
-      if (enableLogging) {
-        console.log(`⏱️ ${componentName} criou timeout ${id}`);
-      }
-      return id;
-    }) as typeof window.setTimeout;
 
     return () => {
       isMountedRef.current = false;
 
-      // Restaurar funções originais
-      window.setInterval = originalInterval;
-      window.setTimeout = originalTimeout;
+      const intervalCount = intervalIdsRef.current.size;
+      const timeoutCount = timeoutIdsRef.current.size;
 
-      // Limpar TODOS os timers criados
-      const timerCount = timerIdsRef.current.size;
-      timerIdsRef.current.forEach(id => {
-        clearInterval(id);
-        clearTimeout(id);
-      });
+      intervalIdsRef.current.forEach(id => clearInterval(id));
+      timeoutIdsRef.current.forEach(id => clearTimeout(id));
 
-      if (enableLogging && timerCount > 0) {
-        console.warn(`🧹 ${componentName} limpou ${timerCount} timers ao desmontar`);
+      if (enableLogging && (intervalCount + timeoutCount) > 0) {
+        console.warn(`[${componentName}] limpou ${intervalCount} intervals e ${timeoutCount} timeouts ao desmontar`);
       }
 
-      timerIdsRef.current.clear();
+      intervalIdsRef.current.clear();
+      timeoutIdsRef.current.clear();
 
       if (enableLogging) {
-        console.log(`❌ ${componentName} desmontado`);
+        console.log(`[${componentName}] desmontado`);
       }
     };
   }, [componentName, enableLogging]);

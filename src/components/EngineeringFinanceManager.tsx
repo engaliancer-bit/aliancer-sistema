@@ -256,12 +256,22 @@ export default function EngineeringFinanceManager({
   useEffect(() => {
     checkPendingPayrolls();
 
-    // Verificar a cada 5 minutos
-    const interval = setInterval(() => {
-      checkPendingPayrolls();
-    }, 5 * 60 * 1000);
+    let interval: ReturnType<typeof setInterval> | null = setInterval(checkPendingPayrolls, 5 * 60 * 1000);
 
-    return () => clearInterval(interval);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        if (interval) { clearInterval(interval); interval = null; }
+      } else {
+        checkPendingPayrolls();
+        if (!interval) interval = setInterval(checkPendingPayrolls, 5 * 60 * 1000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      if (interval) clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   async function loadData() {

@@ -12,8 +12,22 @@ export default function Dashboard() {
       setHasOpenDelivery(!!openDelivery);
     };
     check();
-    const interval = setInterval(check, 30000);
-    return () => clearInterval(interval);
+    let interval: ReturnType<typeof setInterval> | null = setInterval(check, 30000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        if (interval) { clearInterval(interval); interval = null; }
+      } else {
+        check();
+        if (!interval) interval = setInterval(check, 30000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      if (interval) clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   return (

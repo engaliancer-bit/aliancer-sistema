@@ -95,9 +95,34 @@ export function withRequestCancellation<T, R extends any[]>(
   };
 }
 
-setInterval(() => {
-  cleanupStaleRequests();
-}, 10000);
+let _cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
+
+function startCleanupInterval() {
+  if (_cleanupIntervalId !== null) return;
+  _cleanupIntervalId = setInterval(() => {
+    if (pendingRequests.size > 0) {
+      cleanupStaleRequests();
+    }
+  }, 30000);
+}
+
+function stopCleanupInterval() {
+  if (_cleanupIntervalId !== null) {
+    clearInterval(_cleanupIntervalId);
+    _cleanupIntervalId = null;
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      stopCleanupInterval();
+    } else {
+      startCleanupInterval();
+    }
+  });
+  startCleanupInterval();
+}
 
 // Wire pending request snapshot into performanceMonitor so generateReport() includes it.
 // Deferred import avoids circular-dependency at module load time.

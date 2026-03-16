@@ -368,7 +368,7 @@ function App() {
     <>
     <PWAInstallPrompt />
     <PWAStatus />
-    {import.meta.env.DEV && <CriticalPerformanceMonitor />}
+    {showDiagnostics && import.meta.env.DEV && <CriticalPerformanceMonitor />}
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <header className="bg-gradient-to-r from-[#0A7EC2] to-[#0968A8] shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -796,15 +796,6 @@ function App() {
         </div>
       </footer>
     </div>
-      {import.meta.env.DEV && (
-        <>
-          <MemoryDiagnostics />
-          <QueryPerformanceMonitor />
-          <SupabaseConnectionMonitor />
-          <MemoryLeakMonitor />
-          <AuthDiagnostics />
-        </>
-      )}
       <button
         onClick={() => setShowDiagnostics(true)}
         className="fixed bottom-4 left-4 z-50 bg-gray-800 text-white p-2 rounded-full shadow-lg opacity-20 hover:opacity-100 transition-opacity"
@@ -812,7 +803,19 @@ function App() {
       >
         <Activity className="w-5 h-5" />
       </button>
-      {showDiagnostics && <DiagnosticsPanel onClose={() => setShowDiagnostics(false)} />}
+      {showDiagnostics && import.meta.env.DEV && (
+        <>
+          <MemoryDiagnostics />
+          <QueryPerformanceMonitor />
+          <SupabaseConnectionMonitor />
+          <MemoryLeakMonitor />
+          <AuthDiagnostics />
+          <DiagnosticsPanel onClose={() => setShowDiagnostics(false)} />
+        </>
+      )}
+      {showDiagnostics && !import.meta.env.DEV && (
+        <DiagnosticsPanel onClose={() => setShowDiagnostics(false)} />
+      )}
     </>
   );
 }

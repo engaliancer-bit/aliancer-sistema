@@ -23,19 +23,11 @@ export default function CriticalPerformanceMonitor() {
 
   const fpsRef = useRef<number[]>([]);
   const lastFrameTimeRef = useRef(performance.now());
-  const apiCallsRef = useRef(0);
   const frameRequestRef = useRef<number>();
   const intervalRef = useRef<NodeJS.Timeout>();
-  const originalFetchRef = useRef<typeof window.fetch>();
 
   const startMonitoring = useCallback(() => {
     if (isMonitoring) return;
-
-    originalFetchRef.current = window.fetch;
-    window.fetch = (async (...args) => {
-      apiCallsRef.current++;
-      return originalFetchRef.current!(...args);
-    }) as typeof window.fetch;
 
     const measureFPS = () => {
       if (!isMonitoring) return;
@@ -86,15 +78,11 @@ export default function CriticalPerformanceMonitor() {
         alerts.push(`FPS baixo (${avgFps})`);
       }
 
-      if (apiCallsRef.current > 100) {
-        alerts.push(`${apiCallsRef.current} chamadas API`);
-      }
-
       setMetrics({
         memoryUsageMB,
         memoryPercentage,
         fps: avgFps,
-        apiCalls: apiCallsRef.current,
+        apiCalls: 0,
         isHealthy,
         alerts
       });
@@ -104,10 +92,6 @@ export default function CriticalPerformanceMonitor() {
   }, [isMonitoring]);
 
   const stopMonitoring = useCallback(() => {
-    if (originalFetchRef.current) {
-      window.fetch = originalFetchRef.current;
-    }
-
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = undefined;
@@ -119,7 +103,6 @@ export default function CriticalPerformanceMonitor() {
     }
 
     fpsRef.current = [];
-    apiCallsRef.current = 0;
     setIsMonitoring(false);
     setMetrics({
       memoryUsageMB: 0,
@@ -133,9 +116,6 @@ export default function CriticalPerformanceMonitor() {
 
   useEffect(() => {
     return () => {
-      if (originalFetchRef.current) {
-        window.fetch = originalFetchRef.current;
-      }
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
       }
