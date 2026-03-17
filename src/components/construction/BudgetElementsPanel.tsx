@@ -107,7 +107,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
         .order('sort_order'),
       supabase.from('materials').select('id,name,unit,resale_price,unit_cost').order('name').limit(500),
       supabase.from('products').select('id,name,unit,sale_price,final_sale_price').order('name').limit(500),
-      supabase.from('compositions').select('id,name,description,total_cost').order('name').limit(500),
+      supabase.from('budget_compositions').select('id,name,description,total_cost').order('name').limit(500),
     ]);
     if (elErr) console.error('Erro ao carregar elementos:', elErr);
     if (fpErr) console.error('Erro ao carregar parametros fundacao:', fpErr);
@@ -380,14 +380,17 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
     return { base, bdi, total: base + bdi };
   }, [itemForm.quantity, itemForm.unit_price, budget.bdi_percent]);
 
+  const [saveItemError, setSaveItemError] = useState<string | null>(null);
+
   const saveItem = async () => {
     if (!itemForm.description || itemForm.unit_price < 0) return;
     setSavingItem(true);
+    setSaveItemError(null);
     const maxOrder = budgetItems.reduce((acc, i) => Math.max(acc, i.sort_order || 0), 0);
     const totalPrice = itemForm.quantity * itemForm.unit_price;
     const bdiValue = totalPrice * (budget.bdi_percent / 100);
     const finalPrice = totalPrice + bdiValue;
-    await supabase.from('budget_items').insert({
+    const { error } = await supabase.from('budget_items').insert({
       budget_id: budget.id,
       wbs_step_id: itemForm.wbs_step_id || null,
       item_type: itemForm.item_type,
@@ -404,6 +407,11 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
       notes: itemForm.notes || null,
       sort_order: maxOrder + 1,
     });
+    if (error) {
+      setSaveItemError(`Erro ao salvar: ${error.message}`);
+      setSavingItem(false);
+      return;
+    }
     setShowItemModal(false);
     setMatSearch('');
     await load();
@@ -642,8 +650,13 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
                   rows={2} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 outline-none resize-none" />
               </div>
             </div>
+            {saveItemError && (
+              <div className="px-6 pb-2">
+                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{saveItemError}</p>
+              </div>
+            )}
             <div className="px-6 pb-6 flex gap-3">
-              <button onClick={() => { setShowItemModal(false); setMatSearch(''); }}
+              <button onClick={() => { setShowItemModal(false); setMatSearch(''); setSaveItemError(null); }}
                 className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">
                 Cancelar
               </button>
