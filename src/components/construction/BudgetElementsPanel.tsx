@@ -384,6 +384,9 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
     if (!itemForm.description || itemForm.unit_price < 0) return;
     setSavingItem(true);
     const maxOrder = budgetItems.reduce((acc, i) => Math.max(acc, i.sort_order || 0), 0);
+    const totalPrice = itemForm.quantity * itemForm.unit_price;
+    const bdiValue = totalPrice * (budget.bdi_percent / 100);
+    const finalPrice = totalPrice + bdiValue;
     await supabase.from('budget_items').insert({
       budget_id: budget.id,
       wbs_step_id: itemForm.wbs_step_id || null,
@@ -395,6 +398,9 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
       unit: itemForm.unit,
       quantity: itemForm.quantity,
       unit_price: itemForm.unit_price,
+      total_price: totalPrice,
+      bdi_value: bdiValue,
+      final_price: finalPrice,
       notes: itemForm.notes || null,
       sort_order: maxOrder + 1,
     });
