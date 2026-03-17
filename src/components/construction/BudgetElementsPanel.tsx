@@ -27,10 +27,11 @@ interface Product  { id: string; name: string; unit: string; sale_price: number;
 interface Comp     { id: string; name: string; description: string | null; total_cost: number | null; }
 
 const ITEM_TYPE_CONFIG: Record<ItemType, { label: string; color: string; bg: string; icon: React.ComponentType<any> }> = {
-  composicao: { label: 'Composicao', color: 'text-blue-700',   bg: 'bg-blue-100',   icon: Layers },
-  material:   { label: 'Insumo',     color: 'text-amber-700',  bg: 'bg-amber-100',  icon: Package },
-  produto:    { label: 'Produto',    color: 'text-green-700',  bg: 'bg-green-100',  icon: Package },
-  servico:    { label: 'Servico',    color: 'text-slate-700',  bg: 'bg-slate-100',  icon: Wrench },
+  composicao:           { label: 'Composicao de Obra', color: 'text-blue-700',   bg: 'bg-blue-100',   icon: Layers },
+  composicao_industria: { label: 'Composicao',         color: 'text-teal-700',   bg: 'bg-teal-100',   icon: Layers },
+  material:             { label: 'Insumo',              color: 'text-amber-700',  bg: 'bg-amber-100',  icon: Package },
+  produto:              { label: 'Produto',             color: 'text-green-700',  bg: 'bg-green-100',  icon: Package },
+  servico:              { label: 'Servico',             color: 'text-slate-700',  bg: 'bg-slate-100',  icon: Wrench },
 };
 
 interface CompositionSubItem {
@@ -63,6 +64,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
   const [materials, setMaterials] = useState<Material[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [compositions, setCompositions] = useState<Comp[]>([]);
+  const [compIndustria, setCompIndustria] = useState<Comp[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedWbs, setExpandedWbs] = useState<Set<string>>(new Set());
   const [subEtapaTotals, setSubEtapaTotals] = useState<Record<string, number>>({});
@@ -84,7 +86,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
   const load = useCallback(async () => {
     setLoading(true);
     const [{ data: elData, error: elErr }, { data: fpData, error: fpErr }, { data: gpData, error: gpErr },
-           { data: itemsData }, { data: matsData }, { data: prodsData }, { data: compsData }] = await Promise.all([
+           { data: itemsData }, { data: matsData }, { data: prodsData }, { data: compsData }, { data: compIndData }] = await Promise.all([
       supabase.from('budget_elements')
         .select('id,budget_id,wbs_step_id,element_type,label,room,calculated_quantity,calculated_unit,measurement_status,sub_etapa,params,notes,created_at,foundation_param_id')
         .eq('budget_id', budget.id)
@@ -108,6 +110,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
       supabase.from('materials').select('id,name,unit,resale_price,unit_cost').order('name').limit(500),
       supabase.from('products').select('id,name,unit,sale_price,final_sale_price').order('name').limit(500),
       supabase.from('budget_compositions').select('id,name,description,unit').order('name').limit(500),
+      supabase.from('compositions').select('id,name,description,total_cost').order('name').limit(500),
     ]);
     if (elErr) console.error('Erro ao carregar elementos:', elErr);
     if (fpErr) console.error('Erro ao carregar parametros fundacao:', fpErr);
@@ -133,6 +136,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
     } else {
       setCompositions([]);
     }
+    setCompIndustria((compIndData || []).map((c: any) => ({ id: c.id, name: c.name, description: c.description, total_cost: c.total_cost ?? 0 })));
     if (elData && elData.length > 0) {
       const ids = new Set((elData as BudgetElement[]).map(e => e.wbs_step_id).filter(Boolean) as string[]);
       if (ids.size > 0) setExpandedWbs(prev => new Set([...prev, ...ids]));
@@ -366,6 +370,11 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
     return compositions.filter(c => c.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
   }, [compositions, matSearch]);
 
+  const filteredCompIndustria = useMemo(() => {
+    if (!matSearch) return compIndustria.slice(0, 50);
+    return compIndustria.filter(c => c.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
+  }, [compIndustria, matSearch]);
+
   const handleTypeChange = (t: ItemType) => {
     setItemForm(f => ({ ...f, item_type: t, material_id: '', product_id: '', composition_id: '', description: '', unit: 'un', unit_price: 0 }));
     setMatSearch('');
@@ -385,6 +394,11 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
 
   const handleSelectComposition = (c: Comp) => {
     setItemForm(f => ({ ...f, composition_id: c.id, description: c.name, unit: 'un', unit_price: c.total_cost ?? 0 }));
+    setMatSearch(c.name);
+  };
+
+  const handleSelectCompIndustria = (c: Comp) => {
+    setItemForm(f => ({ ...f, composition_id: '', description: c.name, unit: 'un', unit_price: c.total_cost ?? 0 }));
     setMatSearch(c.name);
   };
 
@@ -548,7 +562,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
               {/* Type */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Tipo de Item</label>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-5 gap-2">
                   {(Object.keys(ITEM_TYPE_CONFIG) as ItemType[]).map(t => {
                     const cfg = ITEM_TYPE_CONFIG[t];
                     const Icon = cfg.icon;
@@ -566,10 +580,10 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
               </div>
 
               {/* Source picker */}
-              {(itemForm.item_type === 'material' || itemForm.item_type === 'produto' || itemForm.item_type === 'composicao') && (
+              {(itemForm.item_type === 'material' || itemForm.item_type === 'produto' || itemForm.item_type === 'composicao' || itemForm.item_type === 'composicao_industria') && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    {itemForm.item_type === 'material' ? 'Insumo' : itemForm.item_type === 'produto' ? 'Produto' : 'Composicao'}
+                    {itemForm.item_type === 'material' ? 'Insumo' : itemForm.item_type === 'produto' ? 'Produto' : itemForm.item_type === 'composicao' ? 'Composicao de Obra' : 'Composicao (Industria)'}
                   </label>
                   <div className="flex gap-2 mb-2">
                     <div className="relative flex-1">
@@ -601,10 +615,19 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
                         <span className="text-xs text-gray-400">{fmtBRL(c.total_cost ?? 0)}</span>
                       </button>
                     ))}
+                    {itemForm.item_type === 'composicao_industria' && filteredCompIndustria.map(c => (
+                      <button key={c.id} onClick={() => handleSelectCompIndustria(c)}
+                        className={`w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-teal-50 transition-colors ${itemForm.description === c.name ? 'bg-teal-50 text-teal-700 font-medium' : 'text-gray-700'}`}>
+                        <span>{c.name}</span>
+                        <span className="text-xs text-gray-400">{fmtBRL(c.total_cost ?? 0)}</span>
+                      </button>
+                    ))}
                   </div>
                   <p className="text-xs text-gray-400 mt-1 flex items-center gap-1">
                     <Info className="w-3 h-3" />
-                    Preco obtido direto do catalogo de Insumos e Produtos da Industria
+                    {itemForm.item_type === 'composicao_industria'
+                      ? 'Composicoes cadastradas no modulo Industria de Artefatos'
+                      : 'Preco obtido direto do catalogo de Insumos e Produtos da Industria'}
                   </p>
                 </div>
               )}

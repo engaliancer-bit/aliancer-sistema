@@ -282,7 +282,7 @@ export default function ConstructionBudgets() {
           {([
             { id: 'orcamentos', label: 'Orcamentos', icon: FileSpreadsheet },
             { id: 'parametros', label: 'Parametros', icon: SlidersHorizontal },
-            { id: 'composicoes', label: 'Composicoes', icon: Settings },
+            { id: 'composicoes', label: 'Composicoes de Obra', icon: Settings },
           ] as { id: ModuleTab; label: string; icon: React.ComponentType<any> }[]).map(tab => (
             <button key={tab.id} onClick={() => setModuleTab(tab.id)}
               className={`flex items-center gap-2 px-5 py-3.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${

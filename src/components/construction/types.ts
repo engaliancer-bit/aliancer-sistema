@@ -2,7 +2,7 @@ export type BudgetType = 'residencial' | 'comercial' | 'industrial' | 'rural' | 
 export type BudgetStatus = 'rascunho' | 'em_andamento' | 'aprovado' | 'fechado' | 'cancelado';
 export type MeasurementStatus = 'pendente' | 'sugerido' | 'confirmado' | 'ignorado';
 export type ElementSource = 'manual' | 'planta_ia';
-export type ItemType = 'composicao' | 'material' | 'produto' | 'servico';
+export type ItemType = 'composicao' | 'composicao_industria' | 'material' | 'produto' | 'servico';
 
 export interface Budget {
   id: string;

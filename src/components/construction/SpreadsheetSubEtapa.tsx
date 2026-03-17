@@ -3,7 +3,7 @@ import { Plus, Trash2, Search, X, Edit2, Check, ChevronDown, ChevronRight, Packa
 import { supabase } from '../../lib/supabase';
 import { BudgetElement, fmtBRL } from './types';
 
-type SourceType = 'insumo' | 'produto' | 'composicao' | 'livre';
+type SourceType = 'insumo' | 'produto' | 'composicao' | 'composicao_industria' | 'livre';
 
 interface CatalogItem {
   id: string;
@@ -52,10 +52,11 @@ interface Props {
 const UNIT_OPTIONS = ['un', 'm', 'm2', 'm3', 'kg', 'sc', 'cx', 'vb', 'pt', 'gl', 'h', 'mês'];
 
 const SOURCE_CONFIG: Record<SourceType, { label: string; color: string; bg: string; icon: React.ElementType }> = {
-  insumo:     { label: 'Insumo',     color: 'text-amber-700',  bg: 'bg-amber-50 border-amber-200 text-amber-700',   icon: Droplet },
-  produto:    { label: 'Produto',    color: 'text-green-700',  bg: 'bg-green-50 border-green-200 text-green-700',   icon: Package },
-  composicao: { label: 'Composicao', color: 'text-blue-700',   bg: 'bg-blue-50 border-blue-200 text-blue-700',     icon: Layers },
-  livre:      { label: 'Livre',      color: 'text-gray-600',   bg: 'bg-gray-50 border-gray-200 text-gray-600',     icon: Pencil },
+  insumo:               { label: 'Insumo',             color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200 text-amber-700',   icon: Droplet },
+  produto:              { label: 'Produto',             color: 'text-green-700', bg: 'bg-green-50 border-green-200 text-green-700',   icon: Package },
+  composicao:           { label: 'Comp. de Obra',       color: 'text-blue-700',  bg: 'bg-blue-50 border-blue-200 text-blue-700',      icon: Layers },
+  composicao_industria: { label: 'Composicao',          color: 'text-teal-700',  bg: 'bg-teal-50 border-teal-200 text-teal-700',      icon: Layers },
+  livre:                { label: 'Livre',               color: 'text-gray-600',  bg: 'bg-gray-50 border-gray-200 text-gray-600',      icon: Pencil },
 };
 
 export default function SpreadsheetSubEtapa({
@@ -155,6 +156,17 @@ export default function SpreadsheetSubEtapa({
           id: c.id, name: c.name, unit: c.unit || 'un',
           unit_price: costs[c.id] || 0,
           type: 'composicao' as const,
+        })));
+      } else if (src === 'composicao_industria') {
+        const { data } = await supabase
+          .from('compositions')
+          .select('id,name,total_cost')
+          .ilike('name', `%${q}%`)
+          .limit(15);
+        setSearchResults((data || []).map(c => ({
+          id: c.id, name: c.name, unit: 'un',
+          unit_price: c.total_cost || 0,
+          type: 'composicao_industria' as const,
         })));
       }
     } finally {
@@ -570,8 +582,8 @@ export default function SpreadsheetSubEtapa({
             </button>
           </div>
 
-          <div className="flex items-center gap-1.5 mb-3">
-            {(['insumo', 'produto', 'composicao', 'livre'] as SourceType[]).map(src => {
+          <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+            {(['insumo', 'produto', 'composicao', 'composicao_industria', 'livre'] as SourceType[]).map(src => {
               const cfg = SOURCE_CONFIG[src];
               const Icon = cfg.icon;
               const active = source === src;

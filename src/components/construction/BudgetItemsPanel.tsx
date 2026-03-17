@@ -14,10 +14,11 @@ interface Product  { id: string; name: string; unit: string; sale_price: number;
 interface Comp     { id: string; name: string; description: string | null; total_cost: number | null; }
 
 const ITEM_TYPE_CONFIG: Record<ItemType, { label: string; color: string; bg: string; icon: React.ComponentType<any> }> = {
-  composicao: { label: 'Composicao', color: 'text-blue-700',   bg: 'bg-blue-100',   icon: Layers },
-  material:   { label: 'Insumo',     color: 'text-amber-700',  bg: 'bg-amber-100',  icon: Package },
-  produto:    { label: 'Produto',    color: 'text-green-700',  bg: 'bg-green-100',  icon: Package },
-  servico:    { label: 'Servico',    color: 'text-slate-700',  bg: 'bg-slate-100',  icon: Wrench },
+  composicao:           { label: 'Composicao de Obra', color: 'text-blue-700',   bg: 'bg-blue-100',   icon: Layers },
+  composicao_industria: { label: 'Composicao',         color: 'text-teal-700',   bg: 'bg-teal-100',   icon: Layers },
+  material:             { label: 'Insumo',              color: 'text-amber-700',  bg: 'bg-amber-100',  icon: Package },
+  produto:              { label: 'Produto',             color: 'text-green-700',  bg: 'bg-green-100',  icon: Package },
+  servico:              { label: 'Servico',             color: 'text-slate-700',  bg: 'bg-slate-100',  icon: Wrench },
 };
 
 const emptyForm = {
@@ -38,6 +39,7 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
   const [materials, setMaterials] = useState<Material[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [compositions, setCompositions] = useState<Comp[]>([]);
+  const [compIndustria, setCompIndustria] = useState<Comp[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -48,7 +50,7 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [itemsRes, matsRes, prodsRes, compsRes] = await Promise.all([
+    const [itemsRes, matsRes, prodsRes, compsRes, compIndRes] = await Promise.all([
       supabase.from('budget_items')
         .select('id,budget_id,wbs_step_id,item_type,material_id,product_id,composition_id,description,unit,quantity,unit_price,notes,sort_order,created_at')
         .eq('budget_id', budget.id)
@@ -64,6 +66,10 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
         .limit(500),
       supabase.from('budget_compositions')
         .select('id,name,description,unit')
+        .order('name')
+        .limit(500),
+      supabase.from('compositions')
+        .select('id,name,description,total_cost')
         .order('name')
         .limit(500),
     ]);
@@ -85,6 +91,7 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
     } else {
       setCompositions([]);
     }
+    setCompIndustria((compIndRes.data || []).map((c: any) => ({ id: c.id, name: c.name, description: c.description, total_cost: c.total_cost ?? 0 })));
     setLoading(false);
   }, [budget.id]);
 
@@ -122,8 +129,18 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
     return compositions.filter(c => c.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
   }, [compositions, matSearch]);
 
+  const filteredCompIndustria = useMemo(() => {
+    if (!matSearch) return compIndustria.slice(0, 50);
+    return compIndustria.filter(c => c.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
+  }, [compIndustria, matSearch]);
+
   const handleSelectComposition = (c: Comp) => {
     setForm(f => ({ ...f, composition_id: c.id, description: c.name, unit: 'un', unit_price: c.total_cost ?? 0 }));
+    setMatSearch(c.name);
+  };
+
+  const handleSelectCompIndustria = (c: Comp) => {
+    setForm(f => ({ ...f, composition_id: '', description: c.name, unit: 'un', unit_price: c.total_cost ?? 0 }));
     setMatSearch(c.name);
   };
 
@@ -232,7 +249,7 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
               {/* Type */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Tipo de Item</label>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-5 gap-2">
                   {(Object.keys(ITEM_TYPE_CONFIG) as ItemType[]).map(t => {
                     const cfg = ITEM_TYPE_CONFIG[t];
                     const Icon = cfg.icon;
@@ -250,10 +267,10 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
               </div>
 
               {/* Source picker */}
-              {(form.item_type === 'material' || form.item_type === 'produto' || form.item_type === 'composicao') && (
+              {(form.item_type === 'material' || form.item_type === 'produto' || form.item_type === 'composicao' || form.item_type === 'composicao_industria') && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    {form.item_type === 'material' ? 'Insumo' : form.item_type === 'produto' ? 'Produto' : 'Composicao'}
+                    {form.item_type === 'material' ? 'Insumo' : form.item_type === 'produto' ? 'Produto' : form.item_type === 'composicao' ? 'Composicao de Obra' : 'Composicao (Industria)'}
                   </label>
                   <div className="flex gap-2 mb-2">
                     <div className="relative flex-1">
@@ -285,10 +302,19 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
                         <span className="text-xs text-gray-400">{fmtBRL(c.total_cost ?? 0)}</span>
                       </button>
                     ))}
+                    {form.item_type === 'composicao_industria' && filteredCompIndustria.map(c => (
+                      <button key={c.id} onClick={() => handleSelectCompIndustria(c)}
+                        className={`w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-teal-50 transition-colors ${form.description === c.name ? 'bg-teal-50 text-teal-700 font-medium' : 'text-gray-700'}`}>
+                        <span>{c.name}</span>
+                        <span className="text-xs text-gray-400">{fmtBRL(c.total_cost ?? 0)}</span>
+                      </button>
+                    ))}
                   </div>
                   <p className="text-xs text-gray-400 mt-1 flex items-center gap-1">
                     <Info className="w-3 h-3" />
-                    Preco obtido direto do catalogo de Insumos e Produtos da Industria
+                    {form.item_type === 'composicao_industria'
+                      ? 'Composicoes cadastradas no modulo Industria de Artefatos'
+                      : 'Preco obtido direto do catalogo de Insumos e Produtos da Industria'}
                   </p>
                 </div>
               )}
