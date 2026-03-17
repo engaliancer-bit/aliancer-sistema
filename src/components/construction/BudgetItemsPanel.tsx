@@ -62,15 +62,29 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
         .select('id,name,unit,sale_price,final_sale_price')
         .order('name')
         .limit(500),
-      supabase.from('compositions')
-        .select('id,name,description,total_cost')
+      supabase.from('budget_compositions')
+        .select('id,name,description,unit')
         .order('name')
         .limit(500),
     ]);
     setItems(itemsRes.data || []);
     setMaterials(matsRes.data || []);
     setProducts(prodsRes.data || []);
-    setCompositions(compsRes.data || []);
+    const rawComps = compsRes.data || [];
+    if (rawComps.length > 0) {
+      const compIds = rawComps.map((c: any) => c.id);
+      const { data: ciData } = await supabase
+        .from('budget_composition_items')
+        .select('composition_id,coefficient,unit_price')
+        .in('composition_id', compIds);
+      const costMap: Record<string, number> = {};
+      (ciData || []).forEach((ci: any) => {
+        costMap[ci.composition_id] = (costMap[ci.composition_id] || 0) + ci.coefficient * ci.unit_price;
+      });
+      setCompositions(rawComps.map((c: any) => ({ ...c, total_cost: costMap[c.id] ?? 0 })));
+    } else {
+      setCompositions([]);
+    }
     setLoading(false);
   }, [budget.id]);
 
