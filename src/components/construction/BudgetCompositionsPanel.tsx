@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../../lib/supabase';
 import {
   Plus, Edit2, Trash2, ChevronDown, ChevronRight, X, Save,
-  AlertCircle, Search, Settings, Package, Droplet, Hammer
+  Search, Settings, Package, Droplet, Hammer, Tag
 } from 'lucide-react';
 import { Composition, CompositionItem, fmtBRL } from './types';
 
@@ -35,6 +35,7 @@ export default function BudgetCompositionsPanel() {
     item_type: 'material' as 'material' | 'produto' | 'mao_de_obra' | 'equipamento',
     material_id: '', product_id: '', description: '', unit: 'un', coefficient: 1, unit_price: 0,
   });
+  const [editingStageTag, setEditingStageTag] = useState<{ itemId: string; value: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,6 +135,16 @@ export default function BudgetCompositionsPanel() {
     await loadItems(compId);
   };
 
+  const saveStageTag = async (compId: string, itemId: string, tag: string) => {
+    setEditingStageTag(null);
+    const trimmed = tag.trim();
+    await supabase.from('budget_composition_items').update({ stage_tag: trimmed || null }).eq('id', itemId);
+    setCompItems(prev => ({
+      ...prev,
+      [compId]: (prev[compId] || []).map(i => i.id === itemId ? { ...i, stage_tag: trimmed || null } : i),
+    }));
+  };
+
   const compCost = (compId: string) => {
     const items = compItems[compId] || [];
     return items.reduce((s, i) => s + i.coefficient * i.unit_price, 0);
@@ -201,6 +212,9 @@ export default function BudgetCompositionsPanel() {
                         <tr>
                           <th className="px-4 py-2 text-left text-gray-500 font-medium">Tipo</th>
                           <th className="px-4 py-2 text-left text-gray-500 font-medium">Descricao</th>
+                          <th className="px-4 py-2 text-left text-gray-500 font-medium">
+                            <span className="flex items-center gap-1"><Tag className="w-3 h-3" /> Fase/Etapa</span>
+                          </th>
                           <th className="px-4 py-2 text-right text-gray-500 font-medium">Coef.</th>
                           <th className="px-4 py-2 text-right text-gray-500 font-medium">Un.</th>
                           <th className="px-4 py-2 text-right text-gray-500 font-medium">Preco Unit.</th>
@@ -213,14 +227,49 @@ export default function BudgetCompositionsPanel() {
                           const tc = ITEM_TYPE_CONFIG[item.item_type];
                           const TypeIcon = tc.icon;
                           const name = item.materials?.name || item.products?.name || item.description || '-';
+                          const isEditingTag = editingStageTag?.itemId === item.id;
                           return (
-                            <tr key={item.id} className="hover:bg-white">
+                            <tr key={item.id} className="hover:bg-white group">
                               <td className="px-4 py-2">
                                 <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${tc.color}`}>
                                   <TypeIcon className="w-3 h-3" />{tc.label}
                                 </span>
                               </td>
                               <td className="px-4 py-2 text-gray-700">{name}</td>
+                              <td className="px-4 py-2">
+                                {isEditingTag ? (
+                                  <input
+                                    autoFocus
+                                    type="text"
+                                    value={editingStageTag.value}
+                                    onChange={e => setEditingStageTag({ itemId: item.id, value: e.target.value })}
+                                    onBlur={() => saveStageTag(comp.id, item.id, editingStageTag.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') saveStageTag(comp.id, item.id, editingStageTag.value);
+                                      if (e.key === 'Escape') setEditingStageTag(null);
+                                    }}
+                                    placeholder="Ex: Topografia, Fundacao..."
+                                    className="w-full px-2 py-0.5 text-xs border border-orange-300 rounded focus:ring-1 focus:ring-orange-400 bg-white min-w-32"
+                                  />
+                                ) : (
+                                  <button
+                                    onClick={() => setEditingStageTag({ itemId: item.id, value: (item as any).stage_tag || '' })}
+                                    className="flex items-center gap-1 group/tag"
+                                    title="Clique para definir a fase/etapa deste item"
+                                  >
+                                    {(item as any).stage_tag ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-50 border border-orange-200 text-orange-700 text-[10px] font-medium">
+                                        <Tag className="w-2.5 h-2.5" />
+                                        {(item as any).stage_tag}
+                                      </span>
+                                    ) : (
+                                      <span className="text-gray-300 text-[10px] opacity-0 group-hover/tag:opacity-100 transition-opacity flex items-center gap-0.5">
+                                        <Tag className="w-2.5 h-2.5" /> + fase
+                                      </span>
+                                    )}
+                                  </button>
+                                )}
+                              </td>
                               <td className="px-4 py-2 text-right text-gray-600">{item.coefficient}</td>
                               <td className="px-4 py-2 text-right text-gray-500">{item.unit}</td>
                               <td className="px-4 py-2 text-right text-gray-600">{fmtBRL(item.unit_price)}</td>
@@ -236,13 +285,13 @@ export default function BudgetCompositionsPanel() {
                           );
                         })}
                         {items.length === 0 && (
-                          <tr><td colSpan={7} className="px-4 py-4 text-center text-gray-400">Nenhum item. Adicione abaixo.</td></tr>
+                          <tr><td colSpan={8} className="px-4 py-4 text-center text-gray-400">Nenhum item. Adicione abaixo.</td></tr>
                         )}
                       </tbody>
                       {items.length > 0 && (
                         <tfoot className="bg-gray-100">
                           <tr>
-                            <td colSpan={5} className="px-4 py-2 text-right font-semibold text-gray-700">Custo Total/{comp.unit}</td>
+                            <td colSpan={6} className="px-4 py-2 text-right font-semibold text-gray-700">Custo Total/{comp.unit}</td>
                             <td className="px-4 py-2 text-right font-bold text-green-600">{fmtBRL(totalCost)}</td>
                             <td />
                           </tr>
