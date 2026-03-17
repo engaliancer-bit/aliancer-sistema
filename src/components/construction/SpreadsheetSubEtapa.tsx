@@ -436,10 +436,15 @@ export default function SpreadsheetSubEtapa({
                       {row.composition_id && (
                         <button
                           onClick={() => toggleSubItems(row.id)}
-                          className="flex-shrink-0 p-0.5 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                          title="Ver itens da composicao"
+                          title={row.subExpanded ? 'Ocultar composicao' : 'Ver itens da composicao'}
+                          className={`flex-shrink-0 flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
+                            row.subExpanded
+                              ? 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200'
+                              : 'bg-blue-50 text-blue-500 border-blue-100 hover:bg-blue-100 hover:text-blue-700'
+                          }`}
                         >
-                          {row.subExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                          <Layers className="w-3 h-3" />
+                          {row.subExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
                         </button>
                       )}
                       {editingCell?.rowId === row.id && editingCell.field === 'description' ? (

@@ -1,19 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import {
-  ArrowLeft, Layers, Package, BarChart2, Edit2, Save, X,
+  ArrowLeft, Layers, BarChart2, Edit2, Save, X,
   Brain, TrendingUp, SlidersHorizontal, CheckCircle2, ListChecks
 } from 'lucide-react';
 import { Budget, WBSStep, BUDGET_TYPE_CONFIG, STATUS_CONFIG, fmtBRL } from './types';
 import BudgetElementsPanel from './BudgetElementsPanel';
-import BudgetItemsPanel from './BudgetItemsPanel';
 import BudgetReportPanel from './BudgetReportPanel';
 import QuantitativeSummaryPanel from './QuantitativeSummaryPanel';
 import FloorPlanIAPanel from './FloorPlanIAPanel';
 import BudgetGlobalParamsPanel from './BudgetGlobalParamsPanel';
 import BudgetStagesPanel from './BudgetStagesPanel';
 
-type Tab = 'parametros' | 'elements' | 'items' | 'quantitativos' | 'ia' | 'report' | 'stages';
+type Tab = 'parametros' | 'elements' | 'quantitativos' | 'ia' | 'report' | 'stages';
 
 interface Props {
   budget: Budget;
@@ -74,9 +73,8 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
 
   const tabs: { id: Tab; label: string; icon: React.ComponentType<any>; highlight?: boolean; step?: number }[] = [
     { id: 'parametros', label: 'Parametros', icon: SlidersHorizontal, step: 1 },
-    { id: 'elements', label: 'Levantamento', icon: Layers, step: 2 },
+    { id: 'elements', label: 'Levantamento de Itens', icon: Layers, step: 2 },
     { id: 'stages', label: 'Etapas da Obra', icon: ListChecks },
-    { id: 'items', label: 'Itens', icon: Package, step: 3 },
     { id: 'quantitativos', label: 'Quantitativos', icon: TrendingUp },
     { id: 'ia', label: 'Analise IA', icon: Brain, highlight: true },
     { id: 'report', label: 'Relatorio', icon: BarChart2 },
@@ -155,7 +153,7 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
             {[
               { num: 1, label: 'Parametros', sublabel: `${paramCount} definidos`, done: step1Done, tab: 'parametros' as Tab },
               { num: 2, label: 'Levantamento', sublabel: `${elementCount} elementos`, done: step2Done, tab: 'elements' as Tab },
-              { num: 3, label: 'Custos', sublabel: `${itemCount} itens`, done: step3Done, tab: 'items' as Tab },
+              { num: 3, label: 'Itens', sublabel: `${itemCount} itens`, done: step3Done, tab: 'elements' as Tab },
             ].map((s, i) => (
               <div key={s.num} className="flex items-center flex-1">
                 <button
@@ -222,9 +220,6 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
           )}
           {activeTab === 'stages' && (
             <BudgetStagesPanel budget={budget} />
-          )}
-          {activeTab === 'items' && (
-            <BudgetItemsPanel budget={budget} wbsSteps={wbsSteps} onRefresh={refreshBudget} />
           )}
           {activeTab === 'quantitativos' && (
             <QuantitativeSummaryPanel budget={budget} wbsSteps={wbsSteps} />

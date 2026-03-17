@@ -3,11 +3,11 @@ import { supabase } from '../../lib/supabase';
 import {
   Plus, ChevronDown, ChevronRight,
   RefreshCw, Layers, ArrowUp, ArrowDown, Settings,
-  GitBranch, Trash2, X, Check,
+  GitBranch, Trash2, X, Check, Package, Search, Wrench, Info,
 } from 'lucide-react';
 import {
   Budget, WBSStep, BudgetElement, BudgetFoundationParam,
-  BudgetGlobalParam,
+  BudgetGlobalParam, BudgetItem, ItemType,
   fmtBRL,
   FOUNDATION_TYPES,
 } from './types';
@@ -22,10 +22,47 @@ interface Props {
 
 const DEFAULT_SUB_ETAPA = 'Geral';
 
+interface Material { id: string; name: string; unit: string; resale_price: number | null; unit_cost: number | null; }
+interface Product  { id: string; name: string; unit: string; sale_price: number; final_sale_price: number | null; }
+interface Comp     { id: string; name: string; description: string | null; total_cost: number | null; }
+
+const ITEM_TYPE_CONFIG: Record<ItemType, { label: string; color: string; bg: string; icon: React.ComponentType<any> }> = {
+  composicao: { label: 'Composicao', color: 'text-blue-700',   bg: 'bg-blue-100',   icon: Layers },
+  material:   { label: 'Insumo',     color: 'text-amber-700',  bg: 'bg-amber-100',  icon: Package },
+  produto:    { label: 'Produto',    color: 'text-green-700',  bg: 'bg-green-100',  icon: Package },
+  servico:    { label: 'Servico',    color: 'text-slate-700',  bg: 'bg-slate-100',  icon: Wrench },
+};
+
+interface CompositionSubItem {
+  id: string;
+  description: string;
+  unit: string;
+  coefficient: number;
+  unit_price: number;
+  item_type: string;
+}
+
+const emptyItemForm = (wbsId: string) => ({
+  wbs_step_id: wbsId,
+  item_type: 'material' as ItemType,
+  material_id: '',
+  product_id: '',
+  composition_id: '',
+  description: '',
+  unit: 'un',
+  quantity: 1,
+  unit_price: 0,
+  notes: '',
+});
+
 export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Props) {
   const [elements, setElements] = useState<BudgetElement[]>([]);
+  const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
   const [foundationParams, setFoundationParams] = useState<BudgetFoundationParam[]>([]);
   const [globalParams, setGlobalParams] = useState<BudgetGlobalParam[]>([]);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [compositions, setCompositions] = useState<Comp[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedWbs, setExpandedWbs] = useState<Set<string>>(new Set());
   const [subEtapaTotals, setSubEtapaTotals] = useState<Record<string, number>>({});
@@ -38,9 +75,16 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
   const [renamingWbs, setRenamingWbs] = useState<string | null>(null);
   const [renameWbsValue, setRenameWbsValue] = useState('');
 
+  const [showItemModal, setShowItemModal] = useState(false);
+  const [itemForm, setItemForm] = useState(emptyItemForm(''));
+  const [savingItem, setSavingItem] = useState(false);
+  const [matSearch, setMatSearch] = useState('');
+  const [expandedItems, setExpandedItems] = useState<Record<string, CompositionSubItem[] | null>>({});
+
   const load = useCallback(async () => {
     setLoading(true);
-    const [{ data: elData, error: elErr }, { data: fpData, error: fpErr }, { data: gpData, error: gpErr }] = await Promise.all([
+    const [{ data: elData, error: elErr }, { data: fpData, error: fpErr }, { data: gpData, error: gpErr },
+           { data: itemsData }, { data: matsData }, { data: prodsData }, { data: compsData }] = await Promise.all([
       supabase.from('budget_elements')
         .select('id,budget_id,wbs_step_id,element_type,label,room,calculated_quantity,calculated_unit,measurement_status,sub_etapa,params,notes,created_at,foundation_param_id')
         .eq('budget_id', budget.id)
@@ -56,6 +100,14 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
         .eq('budget_id', budget.id)
         .limit(500)
         .order('sort_order'),
+      supabase.from('budget_items')
+        .select('id,budget_id,wbs_step_id,item_type,material_id,product_id,composition_id,description,unit,quantity,unit_price,total_price,bdi_value,final_price,notes,sort_order,created_at')
+        .eq('budget_id', budget.id)
+        .limit(1000)
+        .order('sort_order'),
+      supabase.from('materials').select('id,name,unit,resale_price,unit_cost').order('name').limit(500),
+      supabase.from('products').select('id,name,unit,sale_price,final_sale_price').order('name').limit(500),
+      supabase.from('compositions').select('id,name,description,total_cost').order('name').limit(500),
     ]);
     if (elErr) console.error('Erro ao carregar elementos:', elErr);
     if (fpErr) console.error('Erro ao carregar parametros fundacao:', fpErr);
@@ -63,6 +115,10 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
     setElements(elData || []);
     setFoundationParams(fpData || []);
     setGlobalParams(gpData || []);
+    setBudgetItems(itemsData || []);
+    setMaterials(matsData || []);
+    setProducts(prodsData || []);
+    setCompositions(compsData || []);
     if (elData && elData.length > 0) {
       const ids = new Set((elData as BudgetElement[]).map(e => e.wbs_step_id).filter(Boolean) as string[]);
       if (ids.size > 0) setExpandedWbs(prev => new Set([...prev, ...ids]));
@@ -81,7 +137,6 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
   const groupedByWbs = useMemo(() => {
     const map: Record<string, Record<string, BudgetElement[]>> = {};
     wbsSteps.forEach(w => { map[w.id] = {}; });
-
     elements.forEach(el => {
       const wbsId = el.wbs_step_id || '__none__';
       if (!map[wbsId]) map[wbsId] = {};
@@ -89,16 +144,27 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
       if (!map[wbsId][subKey]) map[wbsId][subKey] = [];
       map[wbsId][subKey].push(el);
     });
-
     return map;
   }, [elements, wbsSteps]);
 
+  const itemsByWbs = useMemo(() => {
+    const map: Record<string, BudgetItem[]> = {};
+    budgetItems.forEach(item => {
+      const key = item.wbs_step_id || '__none__';
+      if (!map[key]) map[key] = [];
+      map[key].push(item);
+    });
+    return map;
+  }, [budgetItems]);
+
   const wbsStepTotal = useCallback((wbsId: string) => {
     const subMap = groupedByWbs[wbsId] || {};
-    return Object.keys(subMap).reduce((sum, sub) => {
+    const elemTotal = Object.keys(subMap).reduce((sum, sub) => {
       return sum + (subEtapaTotals[`${wbsId}::${sub}`] || 0);
     }, 0);
-  }, [groupedByWbs, subEtapaTotals]);
+    const itemTotal = (itemsByWbs[wbsId] || []).reduce((s, i) => s + (i.final_price || 0), 0);
+    return elemTotal + itemTotal;
+  }, [groupedByWbs, subEtapaTotals, itemsByWbs]);
 
   const handleSubEtapaTotal = useCallback((wbsId: string, subName: string, total: number) => {
     setSubEtapaTotals(prev => ({ ...prev, [`${wbsId}::${subName}`]: total }));
@@ -237,8 +303,9 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
 
   const deleteWbsStep = async (wbsId: string, wbsName: string) => {
     const hasElements = Object.keys(groupedByWbs[wbsId] || {}).length > 0;
-    const msg = hasElements
-      ? `Excluir a etapa "${wbsName}" e todos os seus elementos?`
+    const hasItems = (itemsByWbs[wbsId] || []).length > 0;
+    const msg = (hasElements || hasItems)
+      ? `Excluir a etapa "${wbsName}" e todos os seus elementos e itens?`
       : `Excluir a etapa "${wbsName}"?`;
     if (!window.confirm(msg)) return;
     if (hasElements) {
@@ -247,6 +314,9 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
         await supabase.from('budget_element_line_items').delete().eq('element_id', el.id);
         await supabase.from('budget_elements').delete().eq('id', el.id);
       }
+    }
+    if (hasItems) {
+      await supabase.from('budget_items').delete().eq('wbs_step_id', wbsId);
     }
     await supabase.from('budget_wbs_steps').delete().eq('id', wbsId);
     await load();
@@ -259,6 +329,117 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
     if (!name) return;
     await supabase.from('budget_wbs_steps').update({ name }).eq('id', wbsId);
     onRefresh();
+  };
+
+  const openItemModal = (wbsId: string) => {
+    setItemForm(emptyItemForm(wbsId));
+    setMatSearch('');
+    setShowItemModal(true);
+  };
+
+  const filteredMats = useMemo(() => {
+    if (!matSearch) return materials.slice(0, 50);
+    return materials.filter(m => m.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
+  }, [materials, matSearch]);
+
+  const filteredProds = useMemo(() => {
+    if (!matSearch) return products.slice(0, 50);
+    return products.filter(p => p.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
+  }, [products, matSearch]);
+
+  const filteredComps = useMemo(() => {
+    if (!matSearch) return compositions.slice(0, 50);
+    return compositions.filter(c => c.name.toLowerCase().includes(matSearch.toLowerCase())).slice(0, 50);
+  }, [compositions, matSearch]);
+
+  const handleTypeChange = (t: ItemType) => {
+    setItemForm(f => ({ ...f, item_type: t, material_id: '', product_id: '', composition_id: '', description: '', unit: 'un', unit_price: 0 }));
+    setMatSearch('');
+  };
+
+  const handleSelectMaterial = (m: Material) => {
+    const price = m.resale_price ?? m.unit_cost ?? 0;
+    setItemForm(f => ({ ...f, material_id: m.id, description: m.name, unit: m.unit, unit_price: price }));
+    setMatSearch(m.name);
+  };
+
+  const handleSelectProduct = (p: Product) => {
+    const price = p.final_sale_price ?? p.sale_price ?? 0;
+    setItemForm(f => ({ ...f, product_id: p.id, description: p.name, unit: p.unit, unit_price: price }));
+    setMatSearch(p.name);
+  };
+
+  const handleSelectComposition = (c: Comp) => {
+    setItemForm(f => ({ ...f, composition_id: c.id, description: c.name, unit: 'un', unit_price: c.total_cost ?? 0 }));
+    setMatSearch(c.name);
+  };
+
+  const bdiPreview = useMemo(() => {
+    const base = itemForm.quantity * itemForm.unit_price;
+    const bdi = base * (budget.bdi_percent / 100);
+    return { base, bdi, total: base + bdi };
+  }, [itemForm.quantity, itemForm.unit_price, budget.bdi_percent]);
+
+  const saveItem = async () => {
+    if (!itemForm.description || itemForm.unit_price < 0) return;
+    setSavingItem(true);
+    const maxOrder = budgetItems.reduce((acc, i) => Math.max(acc, i.sort_order || 0), 0);
+    await supabase.from('budget_items').insert({
+      budget_id: budget.id,
+      wbs_step_id: itemForm.wbs_step_id || null,
+      item_type: itemForm.item_type,
+      material_id: itemForm.material_id || null,
+      product_id: itemForm.product_id || null,
+      composition_id: itemForm.composition_id || null,
+      description: itemForm.description,
+      unit: itemForm.unit,
+      quantity: itemForm.quantity,
+      unit_price: itemForm.unit_price,
+      notes: itemForm.notes || null,
+      sort_order: maxOrder + 1,
+    });
+    setShowItemModal(false);
+    setMatSearch('');
+    await load();
+    onRefresh();
+    setSavingItem(false);
+  };
+
+  const deleteItem = async (id: string) => {
+    await supabase.from('budget_items').delete().eq('id', id);
+    await load();
+    onRefresh();
+  };
+
+  const loadCompositionSubItems = useCallback(async (compositionId: string): Promise<CompositionSubItem[]> => {
+    const { data } = await supabase
+      .from('budget_composition_items')
+      .select('id, item_type, coefficient, unit_price, unit, description, materials(name), products(name)')
+      .eq('composition_id', compositionId);
+    return (data || []).map((i: any) => ({
+      id: i.id,
+      description: i.description || i.materials?.name || i.products?.name || '—',
+      unit: i.unit,
+      coefficient: i.coefficient,
+      unit_price: i.unit_price,
+      item_type: i.item_type,
+    }));
+  }, []);
+
+  const toggleItemExpand = async (itemId: string, compositionId: string | null) => {
+    if (!compositionId) return;
+    const current = expandedItems[itemId];
+    if (current !== undefined) {
+      if (current === null) {
+        const subs = await loadCompositionSubItems(compositionId);
+        setExpandedItems(prev => ({ ...prev, [itemId]: subs }));
+      } else {
+        setExpandedItems(prev => ({ ...prev, [itemId]: null }));
+      }
+    } else {
+      const subs = await loadCompositionSubItems(compositionId);
+      setExpandedItems(prev => ({ ...prev, [itemId]: subs }));
+    }
   };
 
   const grandTotal = wbsSteps.reduce((sum, w) => sum + wbsStepTotal(w.id), 0);
@@ -317,6 +498,158 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
         </div>
       )}
 
+      {/* Add Item Modal */}
+      {showItemModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-100">
+              <h3 className="text-lg font-bold text-gray-900">Adicionar Item ao Orcamento</h3>
+              <p className="text-sm text-gray-500 mt-0.5">Insumos e Produtos buscados do catalogo existente</p>
+            </div>
+            <div className="p-6 space-y-5">
+              {/* WBS display */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Etapa WBS</label>
+                <select value={itemForm.wbs_step_id} onChange={e => setItemForm(f => ({ ...f, wbs_step_id: e.target.value }))}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 outline-none">
+                  <option value="">-- Sem etapa --</option>
+                  {wbsSteps.map(s => <option key={s.id} value={s.id}>{s.code} - {s.name}</option>)}
+                </select>
+              </div>
+
+              {/* Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Tipo de Item</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(Object.keys(ITEM_TYPE_CONFIG) as ItemType[]).map(t => {
+                    const cfg = ITEM_TYPE_CONFIG[t];
+                    const Icon = cfg.icon;
+                    return (
+                      <button key={t} onClick={() => handleTypeChange(t)}
+                        className={`flex flex-col items-center gap-1 p-3 border-2 rounded-xl text-xs font-medium transition-all ${
+                          itemForm.item_type === t ? `border-orange-400 ${cfg.bg} ${cfg.color}` : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                        }`}>
+                        <Icon className="w-4 h-4" />
+                        {cfg.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Source picker */}
+              {(itemForm.item_type === 'material' || itemForm.item_type === 'produto' || itemForm.item_type === 'composicao') && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    {itemForm.item_type === 'material' ? 'Insumo' : itemForm.item_type === 'produto' ? 'Produto' : 'Composicao'}
+                  </label>
+                  <div className="flex gap-2 mb-2">
+                    <div className="relative flex-1">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input value={matSearch} onChange={e => setMatSearch(e.target.value)}
+                        placeholder={`Buscar ${itemForm.item_type === 'material' ? 'insumo' : itemForm.item_type === 'produto' ? 'produto' : 'composicao'}...`}
+                        className="pl-8 pr-3 py-2 w-full border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-400 outline-none" />
+                    </div>
+                  </div>
+                  <div className="border border-gray-200 rounded-lg max-h-40 overflow-y-auto divide-y divide-gray-100">
+                    {itemForm.item_type === 'material' && filteredMats.map(m => (
+                      <button key={m.id} onClick={() => handleSelectMaterial(m)}
+                        className={`w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-orange-50 transition-colors ${itemForm.material_id === m.id ? 'bg-orange-50 text-orange-700 font-medium' : 'text-gray-700'}`}>
+                        <span>{m.name}</span>
+                        <span className="text-xs text-gray-400">{fmtBRL(m.resale_price ?? m.unit_cost ?? 0)}/{m.unit}</span>
+                      </button>
+                    ))}
+                    {itemForm.item_type === 'produto' && filteredProds.map(p => (
+                      <button key={p.id} onClick={() => handleSelectProduct(p)}
+                        className={`w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-orange-50 transition-colors ${itemForm.product_id === p.id ? 'bg-orange-50 text-orange-700 font-medium' : 'text-gray-700'}`}>
+                        <span>{p.name}</span>
+                        <span className="text-xs text-gray-400">{fmtBRL(p.final_sale_price ?? p.sale_price ?? 0)}/{p.unit}</span>
+                      </button>
+                    ))}
+                    {itemForm.item_type === 'composicao' && filteredComps.map(c => (
+                      <button key={c.id} onClick={() => handleSelectComposition(c)}
+                        className={`w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-orange-50 transition-colors ${itemForm.composition_id === c.id ? 'bg-orange-50 text-orange-700 font-medium' : 'text-gray-700'}`}>
+                        <span>{c.name}</span>
+                        <span className="text-xs text-gray-400">{fmtBRL(c.total_cost ?? 0)}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1 flex items-center gap-1">
+                    <Info className="w-3 h-3" />
+                    Preco obtido direto do catalogo de Insumos e Produtos da Industria
+                  </p>
+                </div>
+              )}
+
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Descricao</label>
+                <input value={itemForm.description} onChange={e => setItemForm(f => ({ ...f, description: e.target.value }))}
+                  placeholder="Descricao do item..."
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 outline-none" />
+              </div>
+
+              {/* Qty + Unit + Price */}
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Quantidade</label>
+                  <input type="number" value={itemForm.quantity} min={0} step={0.001}
+                    onChange={e => setItemForm(f => ({ ...f, quantity: parseFloat(e.target.value) || 0 }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 outline-none" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Unidade</label>
+                  <input value={itemForm.unit} onChange={e => setItemForm(f => ({ ...f, unit: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 outline-none" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Preco Unit. (R$)</label>
+                  <input type="number" value={itemForm.unit_price} min={0} step={0.01}
+                    onChange={e => setItemForm(f => ({ ...f, unit_price: parseFloat(e.target.value) || 0 }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 outline-none" />
+                </div>
+              </div>
+
+              {/* BDI preview */}
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <p className="text-xs font-semibold text-amber-700 mb-2">Preview com BDI ({budget.bdi_percent}%)</p>
+                <div className="grid grid-cols-3 gap-2 text-sm">
+                  <div>
+                    <p className="text-xs text-gray-500">Base</p>
+                    <p className="font-semibold text-gray-800">{fmtBRL(bdiPreview.base)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">BDI</p>
+                    <p className="font-semibold text-amber-600">+ {fmtBRL(bdiPreview.bdi)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Total Final</p>
+                    <p className="font-bold text-orange-600">{fmtBRL(bdiPreview.total)}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Observacoes</label>
+                <textarea value={itemForm.notes} onChange={e => setItemForm(f => ({ ...f, notes: e.target.value }))}
+                  rows={2} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 outline-none resize-none" />
+              </div>
+            </div>
+            <div className="px-6 pb-6 flex gap-3">
+              <button onClick={() => { setShowItemModal(false); setMatSearch(''); }}
+                className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">
+                Cancelar
+              </button>
+              <button onClick={saveItem} disabled={savingItem || !itemForm.description}
+                className="flex-1 px-4 py-2 bg-orange-500 text-white rounded-xl text-sm font-medium hover:bg-orange-600 disabled:opacity-50 transition-colors">
+                {savingItem ? 'Salvando...' : 'Adicionar Item'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex justify-center py-12">
           <div className="w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
@@ -328,6 +661,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
             const subEtapas = Object.keys(subMap);
             const isOpen = expandedWbs.has(wbs.id);
             const totalItems = Object.values(subMap).reduce((s, arr) => s + arr.length, 0);
+            const wbsItems = itemsByWbs[wbs.id] || [];
             const stepTotal = wbsStepTotal(wbs.id);
 
             return (
@@ -367,9 +701,9 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
                     ) : (
                       <>
                         <span className="font-semibold text-sm text-blue-900 truncate">{wbs.name}</span>
-                        {totalItems > 0 && (
+                        {(totalItems + wbsItems.length) > 0 && (
                           <span className="text-xs text-blue-400 flex-shrink-0">
-                            {totalItems} {totalItems === 1 ? 'item' : 'itens'}
+                            {totalItems + wbsItems.length} {(totalItems + wbsItems.length) === 1 ? 'item' : 'itens'}
                           </span>
                         )}
                       </>
@@ -427,7 +761,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
 
                 {isOpen && (
                   <div className="border-t border-gray-100">
-                    {subEtapas.length === 0 ? (
+                    {subEtapas.length === 0 && wbsItems.length === 0 ? (
                       addingSubEtapa === wbs.id ? (
                         <div className="px-4 py-3 flex items-center gap-2 bg-gray-50">
                           <GitBranch className="w-4 h-4 text-gray-400 flex-shrink-0" />
@@ -473,13 +807,21 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
                       ) : (
                         <div className="px-4 py-6 text-center">
                           <GitBranch className="w-8 h-8 text-gray-200 mx-auto mb-2" />
-                          <p className="text-sm text-gray-400 mb-3">Nenhuma sub-etapa adicionada</p>
-                          <button
-                            onClick={() => { setAddingSubEtapa(wbs.id); setNewSubEtapaName(''); }}
-                            className="inline-flex items-center gap-1.5 px-4 py-2 border border-orange-200 text-orange-600 rounded-lg text-sm hover:bg-orange-50 transition-colors"
-                          >
-                            <Plus className="w-4 h-4" /> Adicionar Sub-etapa
-                          </button>
+                          <p className="text-sm text-gray-400 mb-3">Nenhum item adicionado</p>
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => { setAddingSubEtapa(wbs.id); setNewSubEtapaName(''); }}
+                              className="inline-flex items-center gap-1.5 px-4 py-2 border border-orange-200 text-orange-600 rounded-lg text-sm hover:bg-orange-50 transition-colors"
+                            >
+                              <Plus className="w-4 h-4" /> Adicionar Sub-etapa
+                            </button>
+                            <button
+                              onClick={() => openItemModal(wbs.id)}
+                              className="inline-flex items-center gap-1.5 px-4 py-2 border border-blue-200 text-blue-600 rounded-lg text-sm hover:bg-blue-50 transition-colors"
+                            >
+                              <Package className="w-4 h-4" /> Adicionar Item
+                            </button>
+                          </div>
                         </div>
                       )
                     ) : (
@@ -522,6 +864,125 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
                             />
                           );
                         })}
+
+                        {/* Budget Items section for this WBS step */}
+                        {wbsItems.length > 0 && (
+                          <div className="border-t border-gray-100">
+                            <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Package className="w-3.5 h-3.5 text-slate-500" />
+                                <span className="text-xs font-semibold text-slate-600">Itens do Catalogo</span>
+                                <span className="text-xs text-slate-400">({wbsItems.length} {wbsItems.length === 1 ? 'item' : 'itens'})</span>
+                              </div>
+                              <span className="text-xs font-bold text-slate-600">
+                                {fmtBRL(wbsItems.reduce((s, i) => s + (i.final_price || 0), 0))}
+                              </span>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="bg-slate-50/60 border-b border-slate-100">
+                                    <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Descricao</th>
+                                    <th className="text-center px-3 py-2 text-xs font-medium text-gray-500 w-24">Tipo</th>
+                                    <th className="text-right px-3 py-2 text-xs font-medium text-gray-500 w-20">Qtd</th>
+                                    <th className="text-right px-3 py-2 text-xs font-medium text-gray-500 w-28">P. Unit.</th>
+                                    <th className="text-right px-3 py-2 text-xs font-medium text-gray-500 w-24">Base</th>
+                                    <th className="text-right px-3 py-2 text-xs font-medium text-gray-500 w-24">BDI</th>
+                                    <th className="text-right px-3 py-2 text-xs font-medium text-gray-500 w-28">Total</th>
+                                    <th className="w-10" />
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                  {wbsItems.map(item => {
+                                    const cfg = ITEM_TYPE_CONFIG[item.item_type];
+                                    const Icon = cfg.icon;
+                                    const subItems = expandedItems[item.id];
+                                    const isExpanded = subItems !== undefined && subItems !== null;
+                                    return (
+                                      <>
+                                        <tr key={item.id} className="hover:bg-gray-50/50 transition-colors group">
+                                          <td className="px-4 py-2.5">
+                                            <div className="flex items-center gap-1.5">
+                                              {item.composition_id && (
+                                                <button
+                                                  onClick={() => toggleItemExpand(item.id, item.composition_id ?? null)}
+                                                  title={isExpanded ? 'Ocultar composicao' : 'Ver itens da composicao'}
+                                                  className={`flex-shrink-0 p-1 rounded-md transition-colors ${
+                                                    isExpanded
+                                                      ? 'bg-blue-100 text-blue-600 hover:bg-blue-200'
+                                                      : 'text-blue-400 hover:text-blue-600 hover:bg-blue-50'
+                                                  }`}
+                                                >
+                                                  {isExpanded
+                                                    ? <ChevronDown className="w-3.5 h-3.5" />
+                                                    : <ChevronRight className="w-3.5 h-3.5" />
+                                                  }
+                                                </button>
+                                              )}
+                                              <span className="text-gray-800">{item.description}</span>
+                                            </div>
+                                          </td>
+                                          <td className="px-3 py-2.5 text-center">
+                                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.color}`}>
+                                              <Icon className="w-3 h-3" />{cfg.label}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-2.5 text-right text-gray-600 text-xs">{item.quantity} {item.unit}</td>
+                                          <td className="px-3 py-2.5 text-right text-gray-600 text-xs">{fmtBRL(item.unit_price)}</td>
+                                          <td className="px-3 py-2.5 text-right text-gray-600 text-xs">{fmtBRL(item.total_price)}</td>
+                                          <td className="px-3 py-2.5 text-right text-amber-600 text-xs">+{fmtBRL(item.bdi_value)}</td>
+                                          <td className="px-3 py-2.5 text-right font-semibold text-gray-800 text-xs">{fmtBRL(item.final_price)}</td>
+                                          <td className="px-3 py-2.5 text-center">
+                                            <button
+                                              onClick={() => deleteItem(item.id)}
+                                              className="p-1 text-gray-300 hover:text-red-500 transition-colors rounded opacity-0 group-hover:opacity-100"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          </td>
+                                        </tr>
+                                        {isExpanded && subItems && subItems.length > 0 && (
+                                          <tr key={`${item.id}-sub`}>
+                                            <td colSpan={8} className="px-0 py-0">
+                                              <div className="mx-4 mb-2 border border-blue-100 rounded-lg bg-blue-50/40 overflow-hidden">
+                                                <div className="px-3 py-1.5 bg-blue-50 border-b border-blue-100 flex items-center gap-1.5">
+                                                  <Layers className="w-3 h-3 text-blue-500" />
+                                                  <span className="text-xs font-semibold text-blue-700">Itens da composicao (referencia)</span>
+                                                </div>
+                                                <table className="w-full text-xs">
+                                                  <thead>
+                                                    <tr className="bg-blue-50/60">
+                                                      <th className="text-right px-3 py-1 text-gray-500 font-medium w-16">Qtd/un</th>
+                                                      <th className="text-center px-2 py-1 text-gray-500 font-medium w-12">Unid.</th>
+                                                      <th className="text-left px-3 py-1 text-gray-500 font-medium">Descricao</th>
+                                                      <th className="text-right px-3 py-1 text-gray-500 font-medium w-24">V. Unit.</th>
+                                                      <th className="text-right px-3 py-1 text-gray-500 font-medium w-24">Subtotal</th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody className="divide-y divide-blue-100/60">
+                                                    {subItems.map(sub => (
+                                                      <tr key={sub.id} className="hover:bg-blue-50/60">
+                                                        <td className="px-3 py-1 text-right text-gray-700">{sub.coefficient.toLocaleString('pt-BR', { maximumFractionDigits: 3 })}</td>
+                                                        <td className="px-2 py-1 text-center text-gray-500">{sub.unit}</td>
+                                                        <td className="px-3 py-1 text-gray-700">{sub.description}</td>
+                                                        <td className="px-3 py-1 text-right text-gray-600">{fmtBRL(sub.unit_price)}</td>
+                                                        <td className="px-3 py-1 text-right text-gray-700 font-medium">{fmtBRL(sub.coefficient * sub.unit_price)}</td>
+                                                      </tr>
+                                                    ))}
+                                                  </tbody>
+                                                </table>
+                                              </div>
+                                            </td>
+                                          </tr>
+                                        )}
+                                      </>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
 
                         {addingSubEtapa === wbs.id ? (
                           <div className="px-4 py-3 flex items-center gap-2 border-t border-gray-100 bg-gray-50">
@@ -567,12 +1028,21 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
                           </div>
                         ) : (
                           <div className="px-4 py-2.5 border-t border-gray-100 bg-gray-50 flex items-center justify-between">
-                            <button
-                              onClick={() => { setAddingSubEtapa(wbs.id); setNewSubEtapaName(''); }}
-                              className="flex items-center gap-1 text-xs text-gray-500 hover:text-orange-600 font-medium transition-colors"
-                            >
-                              <Plus className="w-3.5 h-3.5" /> Adicionar sub-etapa
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => { setAddingSubEtapa(wbs.id); setNewSubEtapaName(''); }}
+                                className="flex items-center gap-1 text-xs text-gray-500 hover:text-orange-600 font-medium transition-colors"
+                              >
+                                <Plus className="w-3.5 h-3.5" /> Adicionar sub-etapa
+                              </button>
+                              <span className="text-gray-300 text-xs">|</span>
+                              <button
+                                onClick={() => openItemModal(wbs.id)}
+                                className="flex items-center gap-1 text-xs text-gray-500 hover:text-blue-600 font-medium transition-colors"
+                              >
+                                <Package className="w-3.5 h-3.5" /> Adicionar item
+                              </button>
+                            </div>
                             {stepTotal > 0 && (
                               <span className="text-sm font-bold text-blue-700">
                                 Total {wbs.name}: {fmtBRL(stepTotal)}
