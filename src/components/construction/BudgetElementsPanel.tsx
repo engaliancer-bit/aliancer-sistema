@@ -107,7 +107,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
         .order('sort_order'),
       supabase.from('materials').select('id,name,unit,resale_price,unit_cost').order('name').limit(500),
       supabase.from('products').select('id,name,unit,sale_price,final_sale_price').order('name').limit(500),
-      supabase.from('budget_compositions').select('id,name,description,total_cost').order('name').limit(500),
+      supabase.from('compositions').select('id,name,description,total_cost').order('name').limit(500),
     ]);
     if (elErr) console.error('Erro ao carregar elementos:', elErr);
     if (fpErr) console.error('Erro ao carregar parametros fundacao:', fpErr);
