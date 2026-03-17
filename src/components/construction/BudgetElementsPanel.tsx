@@ -410,6 +410,29 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
 
   const [saveItemError, setSaveItemError] = useState<string | null>(null);
 
+  const recalcBudgetTotals = async () => {
+    const { data: allItems } = await supabase
+      .from('budget_items')
+      .select('item_type,quantity,unit_price')
+      .eq('budget_id', budget.id);
+    const list = allItems || [];
+    const totalMaterials = list
+      .filter((i: any) => i.item_type !== 'servico')
+      .reduce((s: number, i: any) => s + i.quantity * i.unit_price, 0);
+    const totalLabor = list
+      .filter((i: any) => i.item_type === 'servico')
+      .reduce((s: number, i: any) => s + i.quantity * i.unit_price, 0);
+    const base = totalMaterials + totalLabor;
+    const totalBdi = base * budget.bdi_percent / 100;
+    const grandTotal = base + totalBdi;
+    await supabase.from('budgets').update({
+      total_materials: totalMaterials,
+      total_labor: totalLabor,
+      total_bdi: totalBdi,
+      grand_total: grandTotal,
+    }).eq('id', budget.id);
+  };
+
   const saveItem = async () => {
     if (!itemForm.description || itemForm.unit_price < 0) return;
     setSavingItem(true);
@@ -440,6 +463,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
       setSavingItem(false);
       return;
     }
+    await recalcBudgetTotals();
     setShowItemModal(false);
     setMatSearch('');
     await load();
@@ -449,6 +473,7 @@ export default function BudgetElementsPanel({ budget, wbsSteps, onRefresh }: Pro
 
   const deleteItem = async (id: string) => {
     await supabase.from('budget_items').delete().eq('id', id);
+    await recalcBudgetTotals();
     await load();
     onRefresh();
   };

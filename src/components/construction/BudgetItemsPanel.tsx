@@ -150,10 +150,39 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
     return { base, bdi, total: base + bdi };
   }, [form.quantity, form.unit_price, budget.bdi_percent]);
 
+  const recalcBudgetTotals = async () => {
+    const { data: allItems } = await supabase
+      .from('budget_items')
+      .select('item_type,quantity,unit_price')
+      .eq('budget_id', budget.id);
+
+    const list = allItems || [];
+    const totalMaterials = list
+      .filter(i => i.item_type !== 'servico')
+      .reduce((s, i) => s + i.quantity * i.unit_price, 0);
+    const totalLabor = list
+      .filter(i => i.item_type === 'servico')
+      .reduce((s, i) => s + i.quantity * i.unit_price, 0);
+    const base = totalMaterials + totalLabor;
+    const totalBdi = base * budget.bdi_percent / 100;
+    const grandTotal = base + totalBdi;
+
+    await supabase.from('budgets').update({
+      total_materials: totalMaterials,
+      total_labor: totalLabor,
+      total_bdi: totalBdi,
+      grand_total: grandTotal,
+    }).eq('id', budget.id);
+  };
+
   const save = async () => {
     if (!form.description || form.unit_price < 0) return;
     setSaving(true);
     const maxOrder = items.reduce((acc, i) => Math.max(acc, i.sort_order || 0), 0);
+    const totalPrice = form.quantity * form.unit_price;
+    const bdiValue = totalPrice * budget.bdi_percent / 100;
+    const finalPrice = totalPrice + bdiValue;
+
     await supabase.from('budget_items').insert({
       budget_id: budget.id,
       wbs_step_id: form.wbs_step_id || null,
@@ -165,9 +194,13 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
       unit: form.unit,
       quantity: form.quantity,
       unit_price: form.unit_price,
+      bdi_value: bdiValue,
+      final_price: finalPrice,
       notes: form.notes || null,
       sort_order: maxOrder + 1,
     });
+
+    await recalcBudgetTotals();
     setShowForm(false);
     setForm(emptyForm);
     setMatSearch('');
@@ -178,6 +211,7 @@ export default function BudgetItemsPanel({ budget, wbsSteps, onRefresh }: Props)
 
   const deleteItem = async (id: string) => {
     await supabase.from('budget_items').delete().eq('id', id);
+    await recalcBudgetTotals();
     await loadAll();
     onRefresh();
   };

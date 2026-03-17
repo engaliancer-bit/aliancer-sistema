@@ -90,6 +90,38 @@ export default function ConstructionBudgets() {
     setShowForm(true);
   };
 
+  const recalcBudgetItems = async (budgetId: string, bdiPercent: number) => {
+    const { data: items } = await supabase
+      .from('budget_items')
+      .select('id,item_type,quantity,unit_price')
+      .eq('budget_id', budgetId);
+    if (!items || items.length === 0) return;
+
+    for (const item of items) {
+      const totalPrice = item.quantity * item.unit_price;
+      const bdiValue = totalPrice * bdiPercent / 100;
+      await supabase.from('budget_items').update({
+        bdi_value: bdiValue,
+        final_price: totalPrice + bdiValue,
+      }).eq('id', item.id);
+    }
+
+    const totalMaterials = items
+      .filter(i => i.item_type !== 'servico')
+      .reduce((s, i) => s + i.quantity * i.unit_price, 0);
+    const totalLabor = items
+      .filter(i => i.item_type === 'servico')
+      .reduce((s, i) => s + i.quantity * i.unit_price, 0);
+    const base = totalMaterials + totalLabor;
+    const totalBdi = base * bdiPercent / 100;
+    await supabase.from('budgets').update({
+      total_materials: totalMaterials,
+      total_labor: totalLabor,
+      total_bdi: totalBdi,
+      grand_total: base + totalBdi,
+    }).eq('id', budgetId);
+  };
+
   const save = async () => {
     if (!form.title.trim()) { setError('Titulo obrigatorio'); return; }
     setSaving(true); setError(null);
@@ -105,6 +137,9 @@ export default function ConstructionBudgets() {
       };
       if (editingBudget) {
         await supabase.from('budgets').update(payload).eq('id', editingBudget.id);
+        if (form.bdi_percent !== editingBudget.bdi_percent) {
+          await recalcBudgetItems(editingBudget.id, form.bdi_percent);
+        }
       } else {
         await supabase.from('budgets').insert([payload]);
       }
