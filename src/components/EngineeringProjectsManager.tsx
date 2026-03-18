@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   Plus,
@@ -163,6 +163,206 @@ interface ProjectToCollect {
   total_received: number;
 }
 
+interface ProjectCardProps {
+  project: EngineeringProject;
+  urgencyInfo: { daysRemaining: number | null; urgencyColor: string };
+  progress: { completed: number; total: number } | undefined;
+  onEdit: (project: EngineeringProject) => void;
+  onDelete: (id: string) => void;
+  onViewDetails: (project: EngineeringProject) => void;
+  onChangeStatus: (id: string, status: string) => void;
+}
+
+const ProjectCard = memo(({
+  project,
+  urgencyInfo,
+  progress,
+  onEdit,
+  onDelete,
+  onViewDetails,
+  onChangeStatus,
+}: ProjectCardProps) => {
+  const { daysRemaining, urgencyColor } = urgencyInfo;
+
+  return (
+    <div
+      className={`rounded-lg shadow-md border p-4 hover:shadow-lg transition-shadow ${
+        project.status === 'em_exigencia'
+          ? 'bg-red-50 border-red-400 border-2'
+          : 'bg-white border-gray-200'
+      }`}
+    >
+      {project.status === 'em_exigencia' && (
+        <div className={`mb-3 p-2 border rounded-lg ${urgencyColor}`}>
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2 font-semibold text-sm">
+              <AlertCircle className="w-5 h-5" />
+              PROJETO COM EXIGÊNCIAS
+            </div>
+            {project.exigency_deadline && (
+              <div className="text-xs font-bold">
+                {daysRemaining !== null && daysRemaining <= 0 ? (
+                  <span>VENCIDO!</span>
+                ) : daysRemaining !== null && daysRemaining === 1 ? (
+                  <span>1 DIA!</span>
+                ) : daysRemaining !== null ? (
+                  <span>{daysRemaining} DIAS</span>
+                ) : null}
+              </div>
+            )}
+          </div>
+          <p className="text-xs ml-7">{project.exigency_description}</p>
+          {project.exigency_deadline && (
+            <p className="text-xs ml-7 mt-1 font-medium">
+              Prazo: {new Date(project.exigency_deadline + 'T00:00:00').toLocaleDateString('pt-BR')}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex-1">
+          <h3 className="text-lg font-semibold text-gray-900">{project.name}</h3>
+          <div className="flex items-center gap-1 text-sm text-gray-600 mt-1">
+            <User className="w-4 h-4" />
+            {project.customer_name}
+          </div>
+          <div className="flex items-center gap-1 text-sm text-gray-600 mt-1">
+            <MapPin className="w-4 h-4" />
+            {project.property_name}
+          </div>
+        </div>
+        <div className="flex gap-1">
+          <button
+            onClick={() => onEdit(project)}
+            className="text-blue-600 hover:text-blue-700 p-1"
+            title="Editar"
+          >
+            <Edit2 className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => onDelete(project.id)}
+            className="text-red-600 hover:text-red-700 p-1"
+            title="Excluir"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-2 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-gray-600">Tipo de Imóvel:</span>
+          <span className="font-medium">
+            {project.property_type === 'rural' ? 'Rural' : 'Urbano'}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-gray-600 text-xs">Status:</span>
+          <select
+            value={project.status}
+            onChange={(e) => {
+              e.stopPropagation();
+              onChangeStatus(project.id, e.target.value);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className={`px-2 py-1 rounded text-xs font-medium border-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+              project.status === 'registrado'
+                ? 'bg-green-100 text-green-800 border-green-300'
+                : project.status === 'entregue'
+                ? 'bg-blue-100 text-blue-800 border-blue-300'
+                : project.status === 'finalizado'
+                ? 'bg-teal-100 text-teal-800 border-teal-300'
+                : project.status === 'em_correcao'
+                ? 'bg-orange-100 text-orange-800 border-orange-300'
+                : project.status === 'em_desenvolvimento'
+                ? 'bg-blue-100 text-blue-800 border-blue-300'
+                : project.status === 'em_exigencia'
+                ? 'bg-red-100 text-red-800 border-red-300'
+                : 'bg-gray-100 text-gray-800 border-gray-300'
+            }`}
+          >
+            <option value="a_iniciar">A Iniciar</option>
+            <option value="em_desenvolvimento">Em Desenvolvimento</option>
+            <option value="em_correcao">Em Correção</option>
+            <option value="finalizado">Finalizado</option>
+            <option value="entregue">Entregue</option>
+            <option value="em_exigencia">Em Exigência</option>
+            <option value="registrado">Registrado</option>
+          </select>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-600">Responsável:</span>
+          <span className="font-medium">
+            {project.responsible_employee_name || 'Não atribuído'}
+          </span>
+        </div>
+        {project.has_deadline && (
+          <div className="flex items-center justify-between text-orange-600">
+            <span className="flex items-center gap-1">
+              <AlertCircle className="w-4 h-4" />
+              Vencimento:
+            </span>
+            <span className="font-medium">
+              {new Date(project.deadline_date!).toLocaleDateString('pt-BR')}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center justify-between font-medium text-green-600">
+          <span className="flex items-center gap-1">
+            <DollarSign className="w-4 h-4" />
+            Total:
+          </span>
+          <span>R$ {(project.grand_total || 0).toFixed(2)}</span>
+        </div>
+      </div>
+
+      {progress && progress.total > 0 && (
+        <div className="mt-4 pt-3 border-t border-gray-200">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-medium text-gray-600 flex items-center gap-1">
+              <CheckSquare className="w-3.5 h-3.5" />
+              Progresso do Checklist
+            </span>
+            <span className="text-xs font-bold text-blue-600">
+              {progress.completed}/{progress.total} etapas
+            </span>
+          </div>
+          <div className="bg-gray-200 rounded-full h-2 overflow-hidden">
+            <div
+              className="bg-gradient-to-r from-blue-500 to-blue-600 h-2 rounded-full transition-all duration-500 ease-in-out"
+              style={{
+                width: `${progress.total > 0 ? (progress.completed / progress.total) * 100 : 0}%`
+              }}
+            />
+          </div>
+          <div className="flex justify-between mt-1">
+            <span className="text-xs text-gray-500">
+              {progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0}% concluído
+            </span>
+            {progress.completed === progress.total && progress.total > 0 && (
+              <span className="text-xs text-green-600 font-medium flex items-center gap-0.5">
+                <CheckCircle2 className="w-3 h-3" />
+                Completo
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      <button
+        onClick={() => onViewDetails(project)}
+        className="w-full mt-4 bg-blue-50 text-blue-600 px-4 py-2 rounded-lg hover:bg-blue-100 flex items-center justify-center gap-2"
+      >
+        <FileText className="w-4 h-4" />
+        Ver Detalhes
+      </button>
+    </div>
+  );
+});
+
+ProjectCard.displayName = 'ProjectCard';
+
 export default function EngineeringProjectsManager() {
   const [projects, setProjects] = useState<EngineeringProject[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -257,8 +457,10 @@ export default function EngineeringProjectsManager() {
   });
 
   const [accounts, setAccounts] = useState<Array<{ id: string; nome: string }>>([]);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
     loadProjects();
     loadProjectsToCollect();
     loadCustomers();
@@ -266,12 +468,14 @@ export default function EngineeringProjectsManager() {
     loadServiceTemplates();
     loadAccounts();
     loadCompanySettings();
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   // Cleanup quando o formulário fecha
   useEffect(() => {
     if (!showForm) {
-      // Reseta o estado de edição
       setEditingId(null);
     }
   }, [showForm]);
@@ -614,7 +818,7 @@ export default function EngineeringProjectsManager() {
     }
   }
 
-  async function handleChangeProjectStatus(projectId: string, newStatus: string) {
+  const handleChangeProjectStatus = useCallback(async (projectId: string, newStatus: string) => {
     const project = projects.find(p => p.id === projectId);
     if (!project) return;
 
@@ -748,7 +952,8 @@ export default function EngineeringProjectsManager() {
       console.error('Erro ao alterar status:', error);
       alert('Erro ao alterar status do projeto');
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects]);
 
   async function handleChangeStageResponsible(stageId: string, employeeId: string | null) {
     try {
@@ -1876,193 +2081,18 @@ export default function EngineeringProjectsManager() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredProjects.map((project) => {
-            const { daysRemaining, urgencyColor } = projectUrgencyMap[project.id] || { daysRemaining: null, urgencyColor: 'bg-red-100 text-red-800 border-red-300' };
-
-            return (
-            <div
+          {filteredProjects.map((project) => (
+            <ProjectCard
               key={project.id}
-              className={`rounded-lg shadow-md border p-4 hover:shadow-lg transition-shadow ${
-                project.status === 'em_exigencia'
-                  ? 'bg-red-50 border-red-400 border-2'
-                  : 'bg-white border-gray-200'
-              }`}
-            >
-              {project.status === 'em_exigencia' && (
-                <div className={`mb-3 p-2 border rounded-lg ${urgencyColor}`}>
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2 font-semibold text-sm">
-                      <AlertCircle className="w-5 h-5" />
-                      PROJETO COM EXIGÊNCIAS
-                    </div>
-                    {project.exigency_deadline && (
-                      <div className="text-xs font-bold">
-                        {daysRemaining !== null && daysRemaining <= 0 ? (
-                          <span>VENCIDO!</span>
-                        ) : daysRemaining !== null && daysRemaining === 1 ? (
-                          <span>1 DIA!</span>
-                        ) : daysRemaining !== null ? (
-                          <span>{daysRemaining} DIAS</span>
-                        ) : null}
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-xs ml-7">{project.exigency_description}</p>
-                  {project.exigency_deadline && (
-                    <p className="text-xs ml-7 mt-1 font-medium">
-                      Prazo: {new Date(project.exigency_deadline + 'T00:00:00').toLocaleDateString('pt-BR')}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <div className="flex justify-between items-start mb-3">
-                <div className="flex-1">
-                  <h3 className="text-lg font-semibold text-gray-900">{project.name}</h3>
-                  <div className="flex items-center gap-1 text-sm text-gray-600 mt-1">
-                    <User className="w-4 h-4" />
-                    {project.customer_name}
-                  </div>
-                  <div className="flex items-center gap-1 text-sm text-gray-600 mt-1">
-                    <MapPin className="w-4 h-4" />
-                    {project.property_name}
-                  </div>
-                </div>
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => handleEdit(project)}
-                    className="text-blue-600 hover:text-blue-700 p-1"
-                    title="Editar"
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(project.id)}
-                    className="text-red-600 hover:text-red-700 p-1"
-                    title="Excluir"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-600">Tipo de Imóvel:</span>
-                  <span className="font-medium">
-                    {project.property_type === 'rural' ? 'Rural' : 'Urbano'}
-                  </span>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-gray-600 text-xs">Status:</span>
-                  <select
-                    value={project.status}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      handleChangeProjectStatus(project.id, e.target.value);
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    className={`px-2 py-1 rounded text-xs font-medium border-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                      project.status === 'registrado'
-                        ? 'bg-green-100 text-green-800 border-green-300'
-                        : project.status === 'entregue'
-                        ? 'bg-blue-100 text-blue-800 border-blue-300'
-                        : project.status === 'finalizado'
-                        ? 'bg-teal-100 text-teal-800 border-teal-300'
-                        : project.status === 'em_correcao'
-                        ? 'bg-orange-100 text-orange-800 border-orange-300'
-                        : project.status === 'em_desenvolvimento'
-                        ? 'bg-blue-100 text-blue-800 border-blue-300'
-                        : project.status === 'em_exigencia'
-                        ? 'bg-red-100 text-red-800 border-red-300'
-                        : 'bg-gray-100 text-gray-800 border-gray-300'
-                    }`}
-                  >
-                    <option value="a_iniciar">A Iniciar</option>
-                    <option value="em_desenvolvimento">Em Desenvolvimento</option>
-                    <option value="em_correcao">Em Correção</option>
-                    <option value="finalizado">Finalizado</option>
-                    <option value="entregue">Entregue</option>
-                    <option value="em_exigencia">Em Exigência</option>
-                    <option value="registrado">Registrado</option>
-                  </select>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-600">Responsável:</span>
-                  <span className="font-medium">
-                    {project.responsible_employee_name || 'Não atribuído'}
-                  </span>
-                </div>
-                {project.has_deadline && (
-                  <div className="flex items-center justify-between text-orange-600">
-                    <span className="flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      Vencimento:
-                    </span>
-                    <span className="font-medium">
-                      {new Date(project.deadline_date!).toLocaleDateString('pt-BR')}
-                    </span>
-                  </div>
-                )}
-                <div className="flex items-center justify-between font-medium text-green-600">
-                  <span className="flex items-center gap-1">
-                    <DollarSign className="w-4 h-4" />
-                    Total:
-                  </span>
-                  <span>R$ {(project.grand_total || 0).toFixed(2)}</span>
-                </div>
-              </div>
-
-              {/* Progress Bar */}
-              {projectProgress[project.id] && projectProgress[project.id].total > 0 && (
-                <div className="mt-4 pt-3 border-t border-gray-200">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-600 flex items-center gap-1">
-                      <CheckSquare className="w-3.5 h-3.5" />
-                      Progresso do Checklist
-                    </span>
-                    <span className="text-xs font-bold text-blue-600">
-                      {projectProgress[project.id].completed}/{projectProgress[project.id].total} etapas
-                    </span>
-                  </div>
-                  <div className="bg-gray-200 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-gradient-to-r from-blue-500 to-blue-600 h-2 rounded-full transition-all duration-500 ease-in-out"
-                      style={{
-                        width: `${
-                          projectProgress[project.id].total > 0
-                            ? (projectProgress[project.id].completed / projectProgress[project.id].total) * 100
-                            : 0
-                        }%`
-                      }}
-                    />
-                  </div>
-                  <div className="flex justify-between mt-1">
-                    <span className="text-xs text-gray-500">
-                      {projectProgress[project.id].total > 0
-                        ? Math.round((projectProgress[project.id].completed / projectProgress[project.id].total) * 100)
-                        : 0}% concluído
-                    </span>
-                    {projectProgress[project.id].completed === projectProgress[project.id].total && projectProgress[project.id].total > 0 && (
-                      <span className="text-xs text-green-600 font-medium flex items-center gap-0.5">
-                        <CheckCircle2 className="w-3 h-3" />
-                        Completo
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <button
-                onClick={() => handleViewDetails(project)}
-                className="w-full mt-4 bg-blue-50 text-blue-600 px-4 py-2 rounded-lg hover:bg-blue-100 flex items-center justify-center gap-2"
-              >
-                <FileText className="w-4 h-4" />
-                Ver Detalhes
-              </button>
-            </div>
-            );
-          })}
+              project={project}
+              urgencyInfo={projectUrgencyMap[project.id] || { daysRemaining: null, urgencyColor: 'bg-red-100 text-red-800 border-red-300' }}
+              progress={projectProgress[project.id]}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+              onViewDetails={handleViewDetails}
+              onChangeStatus={handleChangeProjectStatus}
+            />
+          ))}
         </div>
       )}
 

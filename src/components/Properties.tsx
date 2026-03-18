@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
-import { MapPin, Home, Building, Filter, Edit2, Search, Plus, Save, X, Trash2 } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
+import { FixedSizeList as List } from 'react-window';
+import { MapPin, Home, Building, Filter, Edit2, Search, Plus, Save, X, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useDebounce } from '../hooks/useDebounce';
 
@@ -34,6 +35,106 @@ const BRAZILIAN_STATES = [
   'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
 ];
 
+const PAGE_SIZE = 100;
+const CARD_HEIGHT = 220;
+const VIRTUALIZE_THRESHOLD = 30;
+
+interface PropertyCardProps {
+  property: Property;
+  onEdit: (property: Property) => void;
+  onDelete: (id: string, name: string) => void;
+}
+
+const PropertyCard = memo(({ property, onEdit, onDelete }: PropertyCardProps) => (
+  <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow bg-white">
+    <div className="flex items-start justify-between mb-3">
+      <div className="flex-1">
+        <div className="flex items-center gap-2 mb-1">
+          {property.property_type === 'rural' ? (
+            <Home className="w-5 h-5 text-green-600" />
+          ) : (
+            <Building className="w-5 h-5 text-blue-600" />
+          )}
+          <h4 className="text-lg font-semibold text-gray-900 truncate">
+            {property.name}
+          </h4>
+        </div>
+        <span className={`inline-block px-2 py-1 text-xs font-semibold rounded-full ${
+          property.property_type === 'rural'
+            ? 'bg-green-100 text-green-800'
+            : 'bg-blue-100 text-blue-800'
+        }`}>
+          {property.property_type === 'rural' ? 'Rural' : 'Urbano'}
+        </span>
+      </div>
+    </div>
+
+    <div className="space-y-2 text-sm mb-4">
+      <div className="flex items-start gap-2 text-gray-700">
+        <span className="font-medium min-w-[60px]">Cliente:</span>
+        <span className="flex-1">{property.customers?.name}</span>
+      </div>
+
+      <div className="flex items-center gap-2 text-gray-600">
+        <MapPin className="w-4 h-4 flex-shrink-0" />
+        <span>{property.municipality} - {property.state}</span>
+      </div>
+
+      {property.registration_number && (
+        <div className="flex items-start gap-2 text-gray-600">
+          <span className="font-medium min-w-[70px]">Matrícula:</span>
+          <span className="flex-1">{property.registration_number}</span>
+        </div>
+      )}
+
+      {property.property_type === 'rural' && (
+        <>
+          {property.ccir && (
+            <div className="flex items-start gap-2 text-gray-600">
+              <span className="font-medium min-w-[70px]">CCIR:</span>
+              <span className="flex-1 text-xs">{property.ccir}</span>
+            </div>
+          )}
+          {property.car_receipt_code && (
+            <div className="flex items-start gap-2 text-gray-600">
+              <span className="font-medium min-w-[70px]">CAR:</span>
+              <span className="flex-1 text-xs">{property.car_receipt_code}</span>
+            </div>
+          )}
+        </>
+      )}
+
+      {property.property_type === 'urban' && property.municipal_registration && (
+        <div className="flex items-start gap-2 text-gray-600">
+          <span className="font-medium min-w-[70px]">Cadastro:</span>
+          <span className="flex-1 text-xs">{property.municipal_registration}</span>
+        </div>
+      )}
+    </div>
+
+    <div className="pt-3 border-t">
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => onEdit(property)}
+          className="bg-[#0A7EC2] text-white px-3 py-2 rounded-lg hover:bg-[#0968A8] transition-colors flex items-center justify-center gap-2 text-sm"
+        >
+          <Edit2 className="w-4 h-4" />
+          Editar
+        </button>
+        <button
+          onClick={() => onDelete(property.id, property.name)}
+          className="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2 text-sm"
+        >
+          <Trash2 className="w-4 h-4" />
+          Excluir
+        </button>
+      </div>
+    </div>
+  </div>
+));
+
+PropertyCard.displayName = 'PropertyCard';
+
 export default function Properties() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -44,6 +145,9 @@ export default function Properties() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const [formData, setFormData] = useState({
     customer_id: '',
@@ -59,55 +163,78 @@ export default function Properties() {
     notes: '',
   });
 
-  useEffect(() => {
-    loadProperties();
-    loadCustomers();
-  }, []);
-
-  const loadCustomers = async () => {
+  const loadCustomers = useCallback(async (signal?: AbortSignal) => {
     try {
       const { data, error } = await supabase
         .from('customers')
         .select('id, name')
-        .order('name');
+        .order('name')
+        .abortSignal(signal!);
 
       if (error) throw error;
       setCustomers(data || []);
-    } catch (error) {
-      console.error('Erro ao carregar clientes:', error);
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') {
+        console.error('Erro ao carregar clientes:', error);
+      }
     }
-  };
+  }, []);
 
-  const loadProperties = async () => {
+  const loadProperties = useCallback(async (page = 0, signal?: AbortSignal) => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
+
+      const from = page * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+
+      const { data, error, count } = await supabase
         .from('properties')
-        .select(`
-          *,
-          customers (
-            name,
-            person_type
-          )
-        `)
-        .order('created_at', { ascending: false });
+        .select(`*, customers (name, person_type)`, { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(from, to)
+        .abortSignal(signal!);
 
       if (error) throw error;
 
       setProperties(data || []);
+      if (count !== null) setTotalCount(count);
 
       const uniqueMunicipalities = Array.from(
         new Set(data?.map(p => p.municipality).filter(Boolean) || [])
       ).sort();
-      setMunicipalities(uniqueMunicipalities);
-    } catch (error) {
-      console.error('Erro ao carregar imóveis:', error);
+      setMunicipalities(prev => {
+        const merged = Array.from(new Set([...prev, ...uniqueMunicipalities])).sort();
+        return merged;
+      });
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') {
+        console.error('Erro ao carregar imóveis:', error);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const resetForm = () => {
+  useEffect(() => {
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
+
+    loadProperties(0, signal);
+    loadCustomers(signal);
+
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, [loadProperties, loadCustomers]);
+
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    loadProperties(page, abortRef.current.signal);
+  }, [loadProperties]);
+
+  const resetForm = useCallback(() => {
     setFormData({
       customer_id: '',
       property_type: 'rural',
@@ -123,9 +250,9 @@ export default function Properties() {
     });
     setEditingId(null);
     setShowForm(false);
-  };
+  }, []);
 
-  const handleEdit = (property: Property) => {
+  const handleEdit = useCallback((property: Property) => {
     setFormData({
       customer_id: property.customer_id,
       property_type: property.property_type,
@@ -141,9 +268,9 @@ export default function Properties() {
     });
     setEditingId(property.id);
     setShowForm(true);
-  };
+  }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!formData.customer_id) {
@@ -184,14 +311,17 @@ export default function Properties() {
       }
 
       resetForm();
-      loadProperties();
+      setCurrentPage(0);
+      abortRef.current?.abort();
+      abortRef.current = new AbortController();
+      loadProperties(0, abortRef.current.signal);
     } catch (error) {
       console.error('Erro ao salvar imóvel:', error);
       alert('Erro ao salvar imóvel');
     }
-  };
+  }, [formData, editingId, resetForm, loadProperties]);
 
-  const handleDelete = async (id: string, name: string) => {
+  const handleDelete = useCallback(async (id: string, name: string) => {
     if (!confirm(`Deseja realmente excluir o imóvel "${name}"?`)) {
       return;
     }
@@ -205,12 +335,14 @@ export default function Properties() {
       if (error) throw error;
 
       alert('Imóvel excluído com sucesso!');
-      loadProperties();
+      abortRef.current?.abort();
+      abortRef.current = new AbortController();
+      loadProperties(currentPage, abortRef.current.signal);
     } catch (error) {
       console.error('Erro ao excluir imóvel:', error);
       alert('Erro ao excluir imóvel');
     }
-  };
+  }, [currentPage, loadProperties]);
 
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
@@ -228,11 +360,25 @@ export default function Properties() {
     });
   }, [properties, filterType, filterMunicipality, debouncedSearchTerm]);
 
-  const stats = {
-    total: properties.length,
+  const stats = useMemo(() => ({
+    total: totalCount,
     rural: properties.filter(p => p.property_type === 'rural').length,
     urban: properties.filter(p => p.property_type === 'urban').length,
-  };
+  }), [totalCount, properties]);
+
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+
+  const useVirtualization = filteredProperties.length >= VIRTUALIZE_THRESHOLD;
+
+  const VirtualRow = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
+    const property = filteredProperties[index];
+    if (!property) return null;
+    return (
+      <div style={{ ...style, paddingBottom: 16 }}>
+        <PropertyCard property={property} onEdit={handleEdit} onDelete={handleDelete} />
+      </div>
+    );
+  }, [filteredProperties, handleEdit, handleDelete]);
 
   if (loading) {
     return (
@@ -304,7 +450,7 @@ export default function Properties() {
                   </label>
                   <select
                     value={formData.customer_id}
-                    onChange={(e) => setFormData({ ...formData, customer_id: e.target.value })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, customer_id: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     required
                   >
@@ -323,7 +469,7 @@ export default function Properties() {
                   </label>
                   <select
                     value={formData.property_type}
-                    onChange={(e) => setFormData({ ...formData, property_type: e.target.value as 'rural' | 'urban' })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, property_type: e.target.value as 'rural' | 'urban' }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     required
                   >
@@ -339,7 +485,7 @@ export default function Properties() {
                   <input
                     type="text"
                     value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     required
                   />
@@ -352,7 +498,7 @@ export default function Properties() {
                   <input
                     type="text"
                     value={formData.registration_number}
-                    onChange={(e) => setFormData({ ...formData, registration_number: e.target.value })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, registration_number: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
@@ -364,7 +510,7 @@ export default function Properties() {
                   <input
                     type="text"
                     value={formData.municipality}
-                    onChange={(e) => setFormData({ ...formData, municipality: e.target.value })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, municipality: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     required
                   />
@@ -376,7 +522,7 @@ export default function Properties() {
                   </label>
                   <select
                     value={formData.state}
-                    onChange={(e) => setFormData({ ...formData, state: e.target.value })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, state: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     required
                   >
@@ -395,7 +541,7 @@ export default function Properties() {
                       <input
                         type="text"
                         value={formData.ccir}
-                        onChange={(e) => setFormData({ ...formData, ccir: e.target.value })}
+                        onChange={(e) => setFormData(prev => ({ ...prev, ccir: e.target.value }))}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       />
                     </div>
@@ -407,7 +553,7 @@ export default function Properties() {
                       <input
                         type="text"
                         value={formData.itr_cib}
-                        onChange={(e) => setFormData({ ...formData, itr_cib: e.target.value })}
+                        onChange={(e) => setFormData(prev => ({ ...prev, itr_cib: e.target.value }))}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       />
                     </div>
@@ -419,7 +565,7 @@ export default function Properties() {
                       <input
                         type="text"
                         value={formData.car_receipt_code}
-                        onChange={(e) => setFormData({ ...formData, car_receipt_code: e.target.value })}
+                        onChange={(e) => setFormData(prev => ({ ...prev, car_receipt_code: e.target.value }))}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       />
                     </div>
@@ -434,7 +580,7 @@ export default function Properties() {
                     <input
                       type="text"
                       value={formData.municipal_registration}
-                      onChange={(e) => setFormData({ ...formData, municipal_registration: e.target.value })}
+                      onChange={(e) => setFormData(prev => ({ ...prev, municipal_registration: e.target.value }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     />
                   </div>
@@ -446,13 +592,12 @@ export default function Properties() {
                   </label>
                   <textarea
                     value={formData.notes}
-                    onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
                     rows={3}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
               </div>
-
 
               <div className="flex gap-3 justify-end pt-4 border-t">
                 <button
@@ -567,7 +712,7 @@ export default function Properties() {
         {(filterType !== 'all' || filterMunicipality || searchTerm) && (
           <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
             <span>
-              Exibindo {filteredProperties.length} de {properties.length} imóveis
+              Exibindo {filteredProperties.length} de {properties.length} imóveis nesta página
             </span>
             <button
               onClick={() => {
@@ -584,9 +729,32 @@ export default function Properties() {
       </div>
 
       <div className="bg-white rounded-lg shadow-md p-6">
-        <h3 className="text-xl font-bold text-gray-800 mb-4">
-          Imóveis Cadastrados ({filteredProperties.length})
-        </h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-xl font-bold text-gray-800">
+            Imóveis Cadastrados ({filteredProperties.length}{totalCount > PAGE_SIZE ? ` / ${totalCount} total` : ''})
+          </h3>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage === 0}
+                className="p-1 rounded-lg disabled:opacity-40 hover:bg-gray-100 transition-colors"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <span className="text-sm text-gray-600">
+                Página {currentPage + 1} de {totalPages}
+              </span>
+              <button
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages - 1}
+                className="p-1 rounded-lg disabled:opacity-40 hover:bg-gray-100 transition-colors"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </div>
+          )}
+        </div>
 
         {filteredProperties.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
@@ -595,97 +763,24 @@ export default function Properties() {
               : 'Nenhum imóvel encontrado com os filtros aplicados'
             }
           </div>
+        ) : useVirtualization ? (
+          <List
+            height={Math.min(filteredProperties.length * CARD_HEIGHT, 600)}
+            itemCount={filteredProperties.length}
+            itemSize={CARD_HEIGHT}
+            width="100%"
+          >
+            {VirtualRow}
+          </List>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredProperties.map((property) => (
-              <div
+              <PropertyCard
                 key={property.id}
-                className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow bg-white"
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      {property.property_type === 'rural' ? (
-                        <Home className="w-5 h-5 text-green-600" />
-                      ) : (
-                        <Building className="w-5 h-5 text-blue-600" />
-                      )}
-                      <h4 className="text-lg font-semibold text-gray-900 truncate">
-                        {property.name}
-                      </h4>
-                    </div>
-                    <span className={`inline-block px-2 py-1 text-xs font-semibold rounded-full ${
-                      property.property_type === 'rural'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-blue-100 text-blue-800'
-                    }`}>
-                      {property.property_type === 'rural' ? 'Rural' : 'Urbano'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-2 text-sm mb-4">
-                  <div className="flex items-start gap-2 text-gray-700">
-                    <span className="font-medium min-w-[60px]">Cliente:</span>
-                    <span className="flex-1">{property.customers?.name}</span>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-gray-600">
-                    <MapPin className="w-4 h-4 flex-shrink-0" />
-                    <span>{property.municipality} - {property.state}</span>
-                  </div>
-
-                  {property.registration_number && (
-                    <div className="flex items-start gap-2 text-gray-600">
-                      <span className="font-medium min-w-[70px]">Matrícula:</span>
-                      <span className="flex-1">{property.registration_number}</span>
-                    </div>
-                  )}
-
-                  {property.property_type === 'rural' && (
-                    <>
-                      {property.ccir && (
-                        <div className="flex items-start gap-2 text-gray-600">
-                          <span className="font-medium min-w-[70px]">CCIR:</span>
-                          <span className="flex-1 text-xs">{property.ccir}</span>
-                        </div>
-                      )}
-                      {property.car_receipt_code && (
-                        <div className="flex items-start gap-2 text-gray-600">
-                          <span className="font-medium min-w-[70px]">CAR:</span>
-                          <span className="flex-1 text-xs">{property.car_receipt_code}</span>
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {property.property_type === 'urban' && property.municipal_registration && (
-                    <div className="flex items-start gap-2 text-gray-600">
-                      <span className="font-medium min-w-[70px]">Cadastro:</span>
-                      <span className="flex-1 text-xs">{property.municipal_registration}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="pt-3 border-t">
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => handleEdit(property)}
-                      className="bg-[#0A7EC2] text-white px-3 py-2 rounded-lg hover:bg-[#0968A8] transition-colors flex items-center justify-center gap-2 text-sm"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                      Editar
-                    </button>
-                    <button
-                      onClick={() => handleDelete(property.id, property.name)}
-                      className="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2 text-sm"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Excluir
-                    </button>
-                  </div>
-                </div>
-              </div>
+                property={property}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+              />
             ))}
           </div>
         )}
