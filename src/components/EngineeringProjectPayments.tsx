@@ -107,8 +107,8 @@ export default function EngineeringProjectPayments({ projectId, onClose }: Engin
             total_received,
             balance,
             start_date,
-            customer:customer_id (name),
-            property:property_id (name)
+            customer:customers!engineering_projects_customer_id_fkey (name),
+            property:properties!engineering_projects_property_id_fkey (name)
           `)
           .eq('id', projectId)
           .single(),

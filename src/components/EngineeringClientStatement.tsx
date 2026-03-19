@@ -156,7 +156,7 @@ export default function EngineeringClientStatement() {
           total_received,
           balance,
           total_actual_value,
-          property:property_id (name),
+          property:properties!engineering_projects_property_id_fkey (name),
           template:template_id (name)
         `)
         .eq('customer_id', selectedCustomerId)

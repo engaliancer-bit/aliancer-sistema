@@ -490,8 +490,8 @@ export default function EngineeringProjectsManager() {
         .from('engineering_projects')
         .select(`
           *,
-          customers (name),
-          properties (name, property_type),
+          customers!engineering_projects_customer_id_fkey (name),
+          properties!engineering_projects_property_id_fkey (name, property_type),
           employees:responsible_employee_id (name)
         `)
         .order('created_at', { ascending: false });

@@ -161,7 +161,7 @@ export default function ClientPortal() {
         .from('engineering_projects')
         .select(`
           id, title, service_type, status, progress_percentage, current_phase,
-          properties (name)
+          properties!engineering_projects_property_id_fkey (name)
         `)
         .eq('customer_id', customer.id)
         .eq('client_visible', true)
