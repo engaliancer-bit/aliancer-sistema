@@ -1895,7 +1895,7 @@ export default function EngineeringProjectsManager() {
                 : 'border-transparent text-gray-600 hover:text-gray-900'
             }`}
           >
-            Em Andamento ({projects.filter((p) => p.status !== 'registrado').length})
+            Em Andamento ({projects.filter((p) => p.status !== 'registrado' && p.property_id !== null).length})
           </button>
           <button
             onClick={() => setActiveTab('to_collect')}
