@@ -23,7 +23,9 @@ export interface Budget {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  cliente_id?: string | null;
   customers?: { id: string; name: string; phone: string };
+  clientes?: { id: string; nome_razao_social: string; telefone: string } | null;
 }
 
 export interface WBSStep {

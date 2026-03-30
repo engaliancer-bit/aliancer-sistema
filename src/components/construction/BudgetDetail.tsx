@@ -49,7 +49,7 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
 
   const refreshBudget = useCallback(async () => {
     const { data } = await supabase
-      .from('budgets').select('*, customers(id,name,phone)')
+      .from('budgets').select('*, customers(id,name,phone), clientes(id,nome_razao_social,telefone)')
       .eq('id', budget.id).maybeSingle();
     if (data) setBudget(data);
     await loadWbs();
@@ -98,7 +98,7 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
           <div className="flex-1 min-w-0">
             <h2 className="text-xl font-bold text-gray-900 truncate">{budget.title}</h2>
             <p className="text-sm text-gray-500 mt-0.5">
-              {budget.customers?.name || 'Sem cliente'} &middot; {tc.label}
+              {budget.customers?.name || budget.clientes?.nome_razao_social || 'Sem cliente'} &middot; {tc.label}
               {budget.description && ` · ${budget.description}`}
             </p>
           </div>

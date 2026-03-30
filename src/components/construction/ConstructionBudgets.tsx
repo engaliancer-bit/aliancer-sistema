@@ -49,7 +49,7 @@ export default function ConstructionBudgets() {
     try {
       const { data } = await supabase
         .from('budgets')
-        .select('*, customers(id, name, phone)')
+        .select('*, customers(id, name, phone), clientes(id, nome_razao_social, telefone)')
         .order('created_at', { ascending: false });
       setBudgets(data || []);
     } finally {
@@ -69,8 +69,8 @@ export default function ConstructionBudgets() {
     if (filterType !== 'all' && b.type !== filterType) return false;
     if (filterStatus !== 'all' && b.status !== filterStatus) return false;
     const q = search.toLowerCase();
-    return !q || b.title.toLowerCase().includes(q)
-      || b.customers?.name?.toLowerCase().includes(q);
+    const clientName = (b.customers?.name || b.clientes?.nome_razao_social || '').toLowerCase();
+    return !q || b.title.toLowerCase().includes(q) || clientName.includes(q);
   }), [budgets, search, filterType, filterStatus]);
 
   const openForm = (budget?: Budget) => {
@@ -420,7 +420,7 @@ export default function ConstructionBudgets() {
                       <div className="min-w-0">
                         <h3 className="font-semibold text-gray-900 text-sm leading-tight truncate">{budget.title}</h3>
                         <p className="text-xs text-gray-500 truncate mt-0.5">
-                          {budget.customers?.name || 'Sem cliente'} · {tc.label}
+                          {budget.customers?.name || budget.clientes?.nome_razao_social || 'Sem cliente'} · {tc.label}
                         </p>
                       </div>
                     </div>
