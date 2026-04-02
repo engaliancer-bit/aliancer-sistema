@@ -366,8 +366,11 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
   const handleOpenRomaneio = useCallback(async (q: Quote) => {
     let targetQuote = { ...q };
 
+    const firstItem = q.quote_items?.[0] as any;
+    const itemsIncomplete = !q.quote_items || q.quote_items.length === 0 ||
+      (firstItem && !firstItem.quantity && !firstItem.proposed_price && !firstItem.products && !firstItem.materials && !firstItem.compositions);
     const [itemsResult, customerResult] = await Promise.all([
-      (!q.quote_items || q.quote_items.length === 0)
+      itemsIncomplete
         ? supabase.from('quote_items').select('*, products(name), materials(name, unit), compositions(name, total_cost)').eq('quote_id', q.id)
         : Promise.resolve({ data: q.quote_items }),
       q.customer_id

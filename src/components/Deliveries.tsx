@@ -182,7 +182,9 @@ export default function Deliveries() {
     let enriched = { ...delivery };
 
     // Load quote items if delivery has a quote
-    if (delivery.quote_id && (!delivery.quotes || !delivery.quotes.customers)) {
+    const quoteItemsIncomplete = !delivery.quotes?.quote_items || delivery.quotes.quote_items.length === 0 ||
+      !(delivery.quotes.quote_items[0] as any)?.products && !(delivery.quotes.quote_items[0] as any)?.materials && !(delivery.quotes.quote_items[0] as any)?.compositions;
+    if (delivery.quote_id && (!delivery.quotes || !delivery.quotes.customers || quoteItemsIncomplete)) {
       const { data: quoteData } = await supabase
         .from('quotes')
         .select(`
