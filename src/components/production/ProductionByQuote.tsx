@@ -29,7 +29,9 @@ interface ProductionOrder {
   order_number: number;
   quote_id?: string;
   customer_id: string | null;
-  product_id: string;
+  product_id: string | null;
+  composition_id?: string | null;
+  composition_name?: string | null;
   total_quantity: number | string;
   produced_quantity: number | string;
   remaining_quantity: number | string;
@@ -38,7 +40,8 @@ interface ProductionOrder {
   deadline?: string | null;
   created_at: string;
   customers?: { name: string; person_type: 'pf' | 'pj' } | null;
-  products?: { name: string; unit: string };
+  products?: { name: string; unit: string } | null;
+  compositions?: { name: string } | null;
   production_order_items?: ProductionOrderItem[];
 }
 
@@ -112,7 +115,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         .select(`
           *,
           customers(name, person_type),
-          products(name, unit)
+          products(name, unit),
+          compositions(name)
         `)
         .order('created_at', { ascending: false });
 
@@ -599,6 +603,18 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
         doc.text(`OP #${order.order_number}  —  ${getStatusLabel(order.status)}`, 14, y);
         y += 5;
 
+        // Exibir nome da composicao ou produto no cabecalho da OP
+        const opPdfName = order.composition_id
+          ? (order.composition_name || order.compositions?.name || null)
+          : (order.products?.name || null);
+        if (opPdfName) {
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(30, 30, 30);
+          doc.text(opPdfName, 14, y);
+          y += 5;
+        }
+
         doc.setFontSize(8);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(80, 80, 80);
@@ -624,6 +640,16 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
           const iunit = item.products?.unit || item.materials?.unit || 'un';
           const itemProg = toNum(item.quantity) === 0 ? 0 : Math.round((toNum(item.produced_quantity) / toNum(item.quantity)) * 100);
 
+          // QR code gerado no inicio da secao do produto — posicionado no canto superior direito
+          // As tabelas usam margem direita de 38mm para nao sobrepor o QR (22x22mm + folga)
+          const qrSize = 22;
+          const qrX = pageWidth - qrSize - 14;
+          const qrStartY = y;
+          let qrDataUrl: string | null = null;
+          try {
+            qrDataUrl = await QRCode.toDataURL(`prod-item-${item.id}`, { width: 100, margin: 1 });
+          } catch {}
+
           doc.setFontSize(9);
           doc.setFont('helvetica', 'bold');
           doc.setTextColor(30, 30, 30);
@@ -631,15 +657,10 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
           y += 4;
 
           if (item.product_id) {
-            const [productData, moldData, reinforcementsData] = await Promise.all([
+            const [productData, reinforcementsData] = await Promise.all([
               supabase.from('products')
-                .select('*, reference_volume, recipes(id, name, concrete_type, specific_weight)')
+                .select('*, reference_volume, mold_id, recipes(id, name, concrete_type, specific_weight), molds(section_width_meters, section_height_meters, reference_measurement_meters, reference_volume_m3)')
                 .eq('id', item.product_id)
-                .maybeSingle()
-                .then(r => r.data),
-              supabase.from('molds')
-                .select('section_width_meters, section_height_meters, reference_measurement_meters, reference_volume_m3')
-                .eq('product_id', item.product_id)
                 .maybeSingle()
                 .then(r => r.data),
               supabase.from('product_reinforcements')
@@ -648,6 +669,8 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                 .order('reinforcement_type')
                 .then(r => r.data),
             ]);
+
+            const moldData = productData?.molds || null;
 
             let recipeItems: any[] = [];
             if (productData?.recipes?.id) {
@@ -674,6 +697,9 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               y += 4;
             }
 
+            // Margem direita reserva espaco para o QR code (qrSize + 14 + 2 de folga)
+            const tableRightMargin = qrSize + 18;
+
             autoTable(doc, {
               startY: y,
               head: [['Qtd. Solicitada', 'Qtd. Produzida', 'Progresso', 'Volume Total Concreto']],
@@ -686,7 +712,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               theme: 'grid',
               headStyles: { fillColor: [240, 247, 255], textColor: [10, 126, 194], fontSize: 7, fontStyle: 'bold' },
               bodyStyles: { fontSize: 8 },
-              margin: { left: 18, right: 14 },
+              margin: { left: 18, right: tableRightMargin },
             });
             y = (doc as any).lastAutoTable.finalY + 4;
 
@@ -710,7 +736,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                 theme: 'grid',
                 headStyles: { fillColor: [230, 245, 255], textColor: [10, 80, 140], fontSize: 7, fontStyle: 'bold' },
                 bodyStyles: { fontSize: 8 },
-                margin: { left: 18, right: 14 },
+                margin: { left: 18, right: tableRightMargin },
               });
               y = (doc as any).lastAutoTable.finalY + 4;
             }
@@ -746,13 +772,11 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               y = (doc as any).lastAutoTable.finalY + 4;
             }
 
-            try {
-              const qrDataUrl = await QRCode.toDataURL(`prod-item-${item.id}`, { width: 80, margin: 1 });
-              const qrY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY - 18 : y;
-              if (qrY > 14 && qrY < pageHeight - 30) {
-                doc.addImage(qrDataUrl, 'PNG', pageWidth - 36, qrY, 20, 20);
-              }
-            } catch {}
+            // QR code posicionado no canto superior direito da secao do produto
+            // alinhado ao titulo "Produto: xxx", sem sobrepor nenhuma tabela
+            if (qrDataUrl && qrStartY > 14 && qrStartY < pageHeight - 30) {
+              doc.addImage(qrDataUrl, 'PNG', qrX, qrStartY - 2, qrSize, qrSize);
+            }
 
           } else {
             doc.setFont('helvetica', 'normal');
@@ -760,6 +784,10 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
             doc.setTextColor(80, 80, 80);
             doc.text(`Qtd: ${fmtQty(item.quantity)} ${iunit}  |  Produzido: ${fmtQty(item.produced_quantity)} ${iunit}  |  ${itemProg}%`, 18, y);
             y += 5;
+
+            if (qrDataUrl && qrStartY > 14 && qrStartY < pageHeight - 30) {
+              doc.addImage(qrDataUrl, 'PNG', qrX, qrStartY - 2, qrSize, qrSize);
+            }
           }
 
           doc.setDrawColor(220, 220, 220);
@@ -1212,10 +1240,20 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                     const hasNoItems = !order.production_order_items || order.production_order_items.length === 0;
                     const isSyncing = syncingOrderId === order.id;
 
+                    const opDisplayName = order.composition_id
+                      ? (order.composition_name || order.compositions?.name || 'Composicao')
+                      : (order.products?.name || null);
+
                     return (
                       <div key={order.id} className="bg-gray-50 px-5 py-4">
                         <div className="flex items-center gap-3 mb-3 flex-wrap">
                           <span className="font-bold text-sm text-gray-800">OP #{order.order_number}</span>
+                          {order.composition_id && (
+                            <span className="flex items-center gap-1 text-xs text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full font-medium">
+                              <Layers className="w-3 h-3" />
+                              Composicao
+                            </span>
+                          )}
                           <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${getStatusColor(order.status)}`}>
                             {getStatusLabel(order.status)}
                           </span>
@@ -1225,6 +1263,14 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                               {new Date(order.deadline + 'T00:00:00').toLocaleDateString('pt-BR')}
                             </span>
                           )}
+                        </div>
+                        {opDisplayName && (
+                          <div className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                            {order.composition_id ? <Layers className="w-4 h-4 text-teal-600 flex-shrink-0" /> : <Package className="w-4 h-4 text-blue-500 flex-shrink-0" />}
+                            {opDisplayName}
+                          </div>
+                        )}
+                        <div className="flex items-center gap-3 mb-3 flex-wrap">
                           <div className="ml-auto flex items-center gap-2 flex-wrap">
                             <button
                               onClick={() => handleOpenAddItem(order, group)}
