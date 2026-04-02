@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Truck, Plus, X, Package, AlertCircle, Save, CheckCircle, Edit2, Trash2, ChevronDown, ChevronRight, Undo2 } from 'lucide-react';
+import { Truck, Plus, X, Package, AlertCircle, Save, CheckCircle, Edit2, Trash2, ChevronDown, ChevronRight, Undo2, ClipboardList } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useHorizontalKeyboardScroll } from '../hooks/useHorizontalKeyboardScroll';
 import DeliveryItemsLoader from './DeliveryItemsLoader';
+import RomaneioModal from './RomaneioModal';
 
 interface Quote {
   id: string;
@@ -102,6 +103,9 @@ export default function Deliveries() {
   const [deliveryItems, setDeliveryItems] = useState<{ [key: string]: any[] }>({});
   const [loadingItems, setLoadingItems] = useState<Set<string>>(new Set());
   const [itemQuantities, setItemQuantities] = useState<{ [key: string]: number }>({});
+  const [showRomaneioModal, setShowRomaneioModal] = useState(false);
+  const [romaneioDelivery, setRomaneioDelivery] = useState<Delivery | null>(null);
+  const [companySettings, setCompanySettings] = useState<Record<string, string>>({});
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -114,6 +118,15 @@ export default function Deliveries() {
     loadMaterials();
     loadOrderProducts();
     checkOpenDeliveryInDatabase();
+    supabase.from('company_settings').select('setting_key, setting_value').then(({ data }) => {
+      if (data) {
+        const map: Record<string, string> = {};
+        (data as Array<{ setting_key: string; setting_value: string }>).forEach((r) => {
+          if (r.setting_key) map[r.setting_key] = r.setting_value || '';
+        });
+        setCompanySettings(map);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -163,6 +176,41 @@ export default function Deliveries() {
     } else {
       setOpenDeliveryInDb(null);
     }
+  };
+
+  const handleOpenRomaneioDelivery = async (delivery: Delivery) => {
+    let enriched = { ...delivery };
+
+    // Load quote items if delivery has a quote
+    if (delivery.quote_id && (!delivery.quotes || !delivery.quotes.customers)) {
+      const { data: quoteData } = await supabase
+        .from('quotes')
+        .select(`
+          id, customer_id, status, total_value,
+          customers (id, name, cpf, phone, street, neighborhood, city),
+          quote_items (*, products(name), materials(name, unit), compositions(name, total_cost))
+        `)
+        .eq('id', delivery.quote_id)
+        .maybeSingle();
+      if (quoteData) {
+        enriched = { ...enriched, quotes: quoteData as any };
+      }
+    }
+
+    // Load customer if delivery has direct customer
+    if (delivery.customer_id && !enriched.customers?.name) {
+      const { data: custData } = await supabase
+        .from('customers')
+        .select('id, name, cpf, phone, street, neighborhood, city')
+        .eq('id', delivery.customer_id)
+        .maybeSingle();
+      if (custData) {
+        enriched = { ...enriched, customers: custData as any };
+      }
+    }
+
+    setRomaneioDelivery(enriched);
+    setShowRomaneioModal(true);
   };
 
   const loadQuotes = async () => {
@@ -2016,6 +2064,13 @@ export default function Deliveries() {
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
+                        <button
+                          onClick={() => handleOpenRomaneioDelivery(delivery)}
+                          className="p-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition-all hover:scale-105"
+                          title="Gerar Romaneio PDF"
+                        >
+                          <ClipboardList className="h-4 w-4" />
+                        </button>
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -2232,6 +2287,15 @@ export default function Deliveries() {
             </div>
           </div>
         </div>
+      )}
+
+      {showRomaneioModal && romaneioDelivery && (
+        <RomaneioModal
+          source="delivery"
+          delivery={romaneioDelivery}
+          companySettings={companySettings}
+          onClose={() => { setShowRomaneioModal(false); setRomaneioDelivery(null); }}
+        />
       )}
     </div>
   );

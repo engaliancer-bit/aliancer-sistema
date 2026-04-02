@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, Printer, X, CreditCard, DollarSign, FileText, Package2, ArrowLeft, Building2, Search, Lock, Unlock, Wallet } from 'lucide-react';
+import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, Printer, X, CreditCard, DollarSign, FileText, Package2, ArrowLeft, Building2, Search, Lock, Unlock, Wallet, ClipboardList } from 'lucide-react';
 import CustomerCreditManager from './CustomerCreditManager';
+import RomaneioModal from './RomaneioModal';
 import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -131,6 +132,9 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
     worksAffected: Array<{ workName: string; itemCount: number }>;
     totalItems: number;
   } | null>(null);
+
+  const [showRomaneioModal, setShowRomaneioModal] = useState(false);
+  const [romaneioQuote, setRomaneioQuote] = useState<Quote | null>(null);
 
   const [formData, setFormData] = useState({
     customer_id: '',
@@ -356,6 +360,38 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
   }, [loadedQuoteDetails]);
 
   const loadData = loadBasicData;
+
+  const handleOpenRomaneio = useCallback(async (q: Quote) => {
+    let targetQuote = { ...q };
+
+    const [itemsResult, customerResult] = await Promise.all([
+      (!q.quote_items || q.quote_items.length === 0)
+        ? supabase.from('quote_items').select('*, products(name), materials(name, unit), compositions(name, total_cost)').eq('quote_id', q.id)
+        : Promise.resolve({ data: q.quote_items }),
+      q.customer_id
+        ? supabase.from('customers').select('id, name, cpf, phone, street, neighborhood, city').eq('id', q.customer_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
+
+    targetQuote = {
+      ...q,
+      quote_items: itemsResult.data || [],
+      customers: customerResult.data
+        ? {
+            name: customerResult.data.name,
+            person_type: q.customers?.person_type || 'pf',
+            cpf: customerResult.data.cpf,
+            phone: customerResult.data.phone,
+            street: customerResult.data.street,
+            neighborhood: customerResult.data.neighborhood,
+            city: customerResult.data.city,
+          } as any
+        : q.customers,
+    };
+
+    setRomaneioQuote(targetQuote);
+    setShowRomaneioModal(true);
+  }, []);
 
   const handleProductChange = useCallback((productId: string) => {
     const product = products.find(p => p.id === productId);
@@ -2293,6 +2329,15 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
                           >
                             <CreditCard className="w-4 h-4" />
                           </button>
+                          {quote.status === 'approved' && (
+                            <button
+                              onClick={() => handleOpenRomaneio(quote)}
+                              className="p-2 text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all hover:scale-105"
+                              title="Gerar Romaneio PDF"
+                            >
+                              <ClipboardList className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -3018,6 +3063,15 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
             </div>
           </div>
         </div>
+      )}
+
+      {showRomaneioModal && romaneioQuote && (
+        <RomaneioModal
+          source="quote"
+          quote={romaneioQuote}
+          companySettings={companySettings}
+          onClose={() => { setShowRomaneioModal(false); setRomaneioQuote(null); }}
+        />
       )}
     </div>
   );
