@@ -725,13 +725,22 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
               doc.text(`Traco: ${productData.recipes.name} — ${concreteTypeLabel}`, 18, y);
               y += 4;
 
+              const specificWeight = toNum(productData?.recipes?.specific_weight);
+              const concreteVolumeM3 = toNum(productData?.concrete_volume_m3) || toNum(productData?.reference_volume);
+              const somaPartes = recipeItems.reduce((acc: number, ri: any) => acc + toNum(ri.quantity), 0);
               const recipeRows = recipeItems.map((ri: any) => {
-                const totalQty = totalVol ? (ri.quantity * totalVol).toFixed(3) : '—';
-                return [ri.materials?.name || '—', ri.quantity.toFixed(3), ri.materials?.unit || '—', totalQty];
+                let consumoUnitario = '—';
+                let totalQty = '—';
+                if (specificWeight > 0 && concreteVolumeM3 > 0 && somaPartes > 0) {
+                  const unitQty = (toNum(ri.quantity) / somaPartes) * specificWeight * concreteVolumeM3;
+                  consumoUnitario = unitQty.toFixed(2);
+                  totalQty = (unitQty * toNum(item.quantity)).toFixed(2);
+                }
+                return [ri.materials?.name || '—', consumoUnitario, ri.materials?.unit || '—', totalQty];
               });
               autoTable(doc, {
                 startY: y,
-                head: [['Material', 'Qtd./m³', 'Unidade', `Qtd. Total (${fmtQty(item.quantity)} pcs)`]],
+                head: [['Material', 'Consumo/unid.', 'Unidade', `Qtd. Total (${fmtQty(item.quantity)} pcs)`]],
                 body: recipeRows,
                 theme: 'grid',
                 headStyles: { fillColor: [230, 245, 255], textColor: [10, 80, 140], fontSize: 7, fontStyle: 'bold' },
