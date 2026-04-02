@@ -13,6 +13,8 @@ interface Customer {
   id: string;
   name: string;
   person_type: 'pf' | 'pj';
+  cpf?: string;
+  phone?: string;
 }
 
 interface Product {
@@ -287,7 +289,7 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
           `)
           .order('created_at', { ascending: false })
           .limit(200),
-        supabase.from('customers').select('id, name, person_type').order('name').limit(500),
+        supabase.from('customers').select('id, name, person_type, cpf, phone').order('name').limit(500),
         supabase.from('products').select('id, name, sale_price, final_sale_price, unit').order('name').limit(500),
         supabase.from('materials').select('id, name, unit, unit_cost, resale_enabled, resale_tax_percentage, resale_margin_percentage, resale_price, package_size').order('name').limit(500),
         supabase.from('compositions').select('id, name, description, total_cost').order('name').limit(200),
@@ -1308,123 +1310,140 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
         items = quoteItems || [];
       }
 
-      const doc = new jsPDF();
-      let currentY = 14;
+      const QRCode = (await import('qrcode')).default;
 
-      const headerTitle = companySettings.report_header_title || 'ORÇAMENTO';
-      const headerSubtitle = companySettings.report_header_subtitle || 'Sistema de Gestão';
-      const footerText = companySettings.report_footer_text || 'Documento gerado automaticamente pelo sistema';
-      const showCompanyInfo = companySettings.report_show_company_info === 'true';
-      const showLogo = companySettings.report_show_logo === 'true';
-      const companyName = companySettings.company_trade_name || companySettings.company_name || '';
-      const logoUrl = companySettings.company_logo_url;
+      const primaryColor: [number, number, number] = [10, 126, 194];
+      const darkGray: [number, number, number] = [50, 50, 50];
+      const midGray: [number, number, number] = [120, 120, 120];
+      const lightGray: [number, number, number] = [245, 247, 250];
+      const white: [number, number, number] = [255, 255, 255];
 
+      const doc = new jsPDF({ unit: 'mm', format: 'a4' });
       const pageWidth = doc.internal.pageSize.width;
-      const rightMargin = pageWidth - 14;
-      const logoWidth = 40;
-      const logoHeight = 20;
-      let logoStartY = currentY;
+      const pageHeight = doc.internal.pageSize.height;
+      const margin = 14;
 
+      const companyName = companySettings.company_trade_name || companySettings.company_name || 'Aliancer Engenharia e Topografia LTDA';
+      const logoUrl = companySettings.company_logo_url;
+      const showLogo = companySettings.report_show_logo !== 'false';
+      const footerText = companySettings.report_footer_text || 'Documento gerado automaticamente pelo Sistema Aliancer';
+      const companyCnpj = companySettings.company_cnpj || '';
+      const companyPhone = companySettings.company_phone || '';
+      const companyEmail = companySettings.company_email || '';
+      const companyAddress = [
+        companySettings.company_address_street,
+        companySettings.company_address_number,
+        companySettings.company_address_neighborhood,
+        companySettings.company_address_city,
+        companySettings.company_address_state,
+      ].filter(Boolean).join(', ');
+
+      // ── HEADER BAR ──────────────────────────────────────────────────────────
+      const headerHeight = 32;
+      doc.setFillColor(...primaryColor);
+      doc.rect(0, 0, pageWidth, headerHeight, 'F');
+
+      let logoLoaded = false;
       if (showLogo && logoUrl) {
         try {
-          const response = await fetch(logoUrl);
-          const blob = await response.blob();
-          const reader = new FileReader();
-
-          await new Promise((resolve, reject) => {
-            reader.onloadend = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
-
-          const logoData = reader.result as string;
-          doc.addImage(logoData, 'PNG', rightMargin - logoWidth, logoStartY, logoWidth, logoHeight);
-        } catch (error) {
-          console.error('Erro ao carregar logo:', error);
-        }
+          const resp = await fetch(logoUrl);
+          if (resp.ok) {
+            const blob = await resp.blob();
+            const logoB64: string = await new Promise((res, rej) => {
+              const reader = new FileReader();
+              reader.onloadend = () => res(reader.result as string);
+              reader.onerror = rej;
+              reader.readAsDataURL(blob);
+            });
+            doc.addImage(logoB64, 'PNG', margin, 5, 22, 22);
+            logoLoaded = true;
+          }
+        } catch { /* logo not critical */ }
       }
 
-      doc.setFontSize(16);
+      const textStart = logoLoaded ? margin + 26 : margin;
+
       doc.setFont('helvetica', 'bold');
-      doc.text(headerTitle, 14, currentY, { maxWidth: pageWidth - logoWidth - 24 });
-      currentY += 6;
+      doc.setFontSize(13);
+      doc.setTextColor(...white);
+      doc.text(companyName, textStart, 13);
 
-      doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
-      doc.text(headerSubtitle, 14, currentY);
-      currentY += 8;
-
-      if (companyName) {
-        doc.setFontSize(12);
-        doc.setFont('helvetica', 'bold');
-        doc.text(companyName, 14, currentY);
-        currentY += 6;
+      doc.setFontSize(7.5);
+      const companyMeta: string[] = [];
+      if (companyCnpj) companyMeta.push(`CNPJ: ${companyCnpj}`);
+      if (companyPhone) companyMeta.push(`Tel: ${companyPhone}`);
+      if (companyEmail) companyMeta.push(companyEmail);
+      if (companyMeta.length) doc.text(companyMeta.join('  |  '), textStart, 19);
+      if (companyAddress) {
+        const addrLines = doc.splitTextToSize(companyAddress, pageWidth - textStart - margin - 60);
+        doc.text(addrLines[0] || '', textStart, 24.5);
       }
 
-      if (showCompanyInfo) {
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
+      // Title block on the right
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.setTextColor(...white);
+      doc.text('ORÇAMENTO', pageWidth - margin, 12, { align: 'right' });
 
-        const companyInfo = [];
-        const address = [
-          companySettings.company_address_street,
-          companySettings.company_address_number,
-          companySettings.company_address_neighborhood,
-          companySettings.company_address_city,
-          companySettings.company_address_state
-        ].filter(Boolean).join(', ');
+      const quoteNumber = quote.id.slice(0, 8).toUpperCase();
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Nº ${quoteNumber}`, pageWidth - margin, 18.5, { align: 'right' });
+      doc.text(`Data: ${new Date(quote.created_at).toLocaleDateString('pt-BR')}`, pageWidth - margin, 24, { align: 'right' });
+      doc.text(`Status: ${getStatusLabel(quote.status)}`, pageWidth - margin, 29, { align: 'right' });
 
-        if (address) companyInfo.push(address);
-        if (companySettings.company_phone) companyInfo.push(`Tel: ${companySettings.company_phone}`);
-        if (companySettings.company_email) companyInfo.push(`Email: ${companySettings.company_email}`);
+      let currentY = headerHeight + 8;
 
-        companyInfo.forEach(info => {
-          doc.text(info, 14, currentY, { maxWidth: pageWidth - logoWidth - 24 });
-          currentY += 4;
-        });
-        currentY += 2;
-      }
-
-      if (showLogo && logoUrl && currentY < (logoStartY + logoHeight)) {
-        currentY = logoStartY + logoHeight + 4;
-      }
-
-      doc.setDrawColor(10, 126, 194);
-      doc.setLineWidth(0.5);
-      doc.line(14, currentY, 196, currentY);
-      currentY += 8;
-
+      // ── DADOS DO CLIENTE ────────────────────────────────────────────────────
       const customer = customers.find(c => c.id === quote.customer_id);
+      const personTypeLabel = customer?.person_type === 'pf' ? 'Pessoa Física' : 'Pessoa Jurídica';
+      const cpfLabel = customer?.person_type === 'pf' ? 'CPF' : 'CNPJ';
 
-      doc.setFontSize(12);
+      const clientCardH = 28;
+      doc.setFillColor(...lightGray);
+      doc.roundedRect(margin, currentY, pageWidth - margin * 2, clientCardH, 2, 2, 'F');
+      doc.setDrawColor(220, 220, 220);
+      doc.roundedRect(margin, currentY, pageWidth - margin * 2, clientCardH, 2, 2, 'S');
+
       doc.setFont('helvetica', 'bold');
-      doc.text('DADOS DO CLIENTE', 14, currentY);
-      currentY += 6;
+      doc.setFontSize(8);
+      doc.setTextColor(...primaryColor);
+      doc.text('DADOS DO CLIENTE', margin + 3, currentY + 6);
 
+      doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
+      doc.setTextColor(...darkGray);
+      doc.text(customer?.name || 'N/A', margin + 3, currentY + 13);
+
       doc.setFont('helvetica', 'normal');
-      doc.text(`Cliente: ${customer?.name || 'N/A'}`, 14, currentY);
-      currentY += 5;
-      doc.text(`Tipo: ${customer?.person_type === 'pf' ? 'Pessoa Física' : 'Pessoa Jurídica'}`, 14, currentY);
-      currentY += 5;
-      doc.text(`Data: ${new Date(quote.created_at).toLocaleDateString('pt-BR')}`, 14, currentY);
-      currentY += 5;
-      doc.text(`Status: ${getStatusLabel(quote.status)}`, 14, currentY);
-      currentY += 5;
+      doc.setFontSize(8.5);
+      doc.setTextColor(...midGray);
+
+      const col2X = margin + (pageWidth - margin * 2) / 2;
+
+      doc.text(`${cpfLabel}: ${customer?.cpf || 'Não informado'}`, margin + 3, currentY + 19);
+      doc.text(`Tipo: ${personTypeLabel}`, margin + 3, currentY + 24);
 
       if (quote.delivery_deadline) {
-        doc.setFont('helvetica', 'bold');
-        doc.text(`Prazo de Entrega: ${new Date(quote.delivery_deadline + 'T00:00:00').toLocaleDateString('pt-BR')}`, 14, currentY);
-        doc.setFont('helvetica', 'normal');
-        currentY += 5;
+        doc.text(
+          `Prazo de Entrega: ${new Date(quote.delivery_deadline + 'T00:00:00').toLocaleDateString('pt-BR')}`,
+          col2X,
+          currentY + 19
+        );
+      }
+      if (customer?.phone) {
+        doc.text(`Tel: ${customer.phone}`, col2X, currentY + 24);
       }
 
-      currentY += 3;
+      currentY += clientCardH + 8;
 
-      doc.setFontSize(12);
+      // ── ITENS DO ORÇAMENTO ──────────────────────────────────────────────────
       doc.setFont('helvetica', 'bold');
-      doc.text('ITENS DO ORÇAMENTO', 14, currentY);
-      currentY += 6;
+      doc.setFontSize(10);
+      doc.setTextColor(...primaryColor);
+      doc.text('ITENS DO ORÇAMENTO', margin, currentY);
+      currentY += 5;
 
       const tableData = items.map(item => {
         const itemName = item.item_type === 'product' ? item.products?.name :
@@ -1434,13 +1453,12 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
         const itemType = item.item_type === 'product' ? 'Produto' :
                          item.item_type === 'material' ? 'Insumo' :
                          item.item_type === 'composition' ? 'Composição' : 'Mão de Obra';
-
         return [
           itemName || 'N/A',
           itemType,
           Number(item.quantity).toFixed(2),
           `R$ ${item.proposed_price.toFixed(2)}`,
-          `R$ ${(Number(item.quantity) * item.proposed_price).toFixed(2)}`
+          `R$ ${(Number(item.quantity) * item.proposed_price).toFixed(2)}`,
         ];
       });
 
@@ -1449,119 +1467,173 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
         head: [['Item', 'Tipo', 'Qtd', 'Valor Unit.', 'Total']],
         body: tableData,
         headStyles: {
-          fillColor: [10, 126, 194],
-          textColor: [255, 255, 255],
+          fillColor: primaryColor,
+          textColor: white,
           fontStyle: 'bold',
-          halign: 'left',
-          fontSize: 10
+          fontSize: 9,
+          cellPadding: { top: 3, bottom: 3, left: 3, right: 3 },
         },
         bodyStyles: {
-          textColor: [50, 50, 50],
-          fontSize: 9
+          textColor: darkGray,
+          fontSize: 8.5,
+          cellPadding: { top: 2.5, bottom: 2.5, left: 3, right: 3 },
         },
-        alternateRowStyles: {
-          fillColor: [245, 247, 250]
-        },
+        alternateRowStyles: { fillColor: lightGray },
         columnStyles: {
-          0: { cellWidth: 70 },
-          1: { cellWidth: 35, halign: 'center' },
+          0: { cellWidth: 72 },
+          1: { cellWidth: 30, halign: 'center' },
           2: { cellWidth: 20, halign: 'center' },
-          3: { cellWidth: 30, halign: 'right' },
-          4: { cellWidth: 30, halign: 'right' }
+          3: { cellWidth: 28, halign: 'right' },
+          4: { cellWidth: 28, halign: 'right' },
         },
-        margin: { left: 14, right: 14 },
+        margin: { left: margin, right: margin },
         theme: 'grid',
+        styles: { lineColor: [220, 220, 220], lineWidth: 0.1 },
       });
 
-      currentY = (doc as any).lastAutoTable.finalY + 8;
+      currentY = (doc as any).lastAutoTable.finalY + 6;
 
+      // ── FORMA DE PAGAMENTO ──────────────────────────────────────────────────
       if (quote.payment_method) {
-        doc.setFontSize(12);
         doc.setFont('helvetica', 'bold');
-        doc.text('FORMA DE PAGAMENTO', 14, currentY);
-        currentY += 6;
-
         doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.text(`Método: ${getPaymentMethodLabel(quote.payment_method)}`, 14, currentY);
+        doc.setTextColor(...primaryColor);
+        doc.text('FORMA DE PAGAMENTO', margin, currentY);
         currentY += 5;
 
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(...darkGray);
+        doc.text(`Método: ${getPaymentMethodLabel(quote.payment_method)}`, margin, currentY);
+        currentY += 4.5;
+
         if (quote.installments) {
-          doc.text(`Parcelas: ${quote.installments}x de R$ ${quote.installment_value?.toFixed(2)}`, 14, currentY);
-          currentY += 5;
+          doc.text(`Parcelas: ${quote.installments}x de R$ ${quote.installment_value?.toFixed(2)}`, margin, currentY);
+          currentY += 4.5;
         }
-
         if (quote.discount_value && quote.discount_value > 0) {
-          doc.text(`Desconto: R$ ${quote.discount_value.toFixed(2)}`, 14, currentY);
-          currentY += 5;
+          doc.text(`Desconto: R$ ${quote.discount_value.toFixed(2)}`, margin, currentY);
+          currentY += 4.5;
         }
-
         if (quote.payment_notes) {
-          doc.text(`Observações: ${quote.payment_notes}`, 14, currentY);
-          currentY += 5;
+          doc.text(`Observações: ${quote.payment_notes}`, margin, currentY);
+          currentY += 4.5;
         }
-
         currentY += 3;
       }
 
+      // ── OBSERVAÇÕES ─────────────────────────────────────────────────────────
       if (quote.notes) {
-        doc.setFontSize(12);
         doc.setFont('helvetica', 'bold');
-        doc.text('OBSERVAÇÕES', 14, currentY);
-        currentY += 6;
-
         doc.setFontSize(10);
+        doc.setTextColor(...primaryColor);
+        doc.text('OBSERVAÇÕES', margin, currentY);
+        currentY += 5;
+
         doc.setFont('helvetica', 'normal');
-        const splitNotes = doc.splitTextToSize(quote.notes, pageWidth - 28);
-        doc.text(splitNotes, 14, currentY);
-        currentY += (splitNotes.length * 5) + 3;
+        doc.setFontSize(9);
+        doc.setTextColor(...darkGray);
+        const splitNotes = doc.splitTextToSize(quote.notes, pageWidth - margin * 2);
+        doc.text(splitNotes, margin, currentY);
+        currentY += splitNotes.length * 4.5 + 3;
       }
 
-      doc.setDrawColor(10, 126, 194);
+      // ── TOTAL ───────────────────────────────────────────────────────────────
+      doc.setDrawColor(...primaryColor);
       doc.setLineWidth(0.5);
-      doc.line(14, currentY, 196, currentY);
+      doc.line(margin, currentY, pageWidth - margin, currentY);
       currentY += 6;
 
-      doc.setFontSize(14);
+      doc.setFontSize(13);
       doc.setFont('helvetica', 'bold');
-      doc.setTextColor(10, 126, 194);
-      doc.text(`VALOR TOTAL: R$ ${(quote.total_value || 0).toFixed(2)}`, 14, currentY);
-      currentY += 12;
+      doc.setTextColor(...primaryColor);
+      doc.text(`VALOR TOTAL: R$ ${(quote.total_value || 0).toFixed(2)}`, margin, currentY);
+      currentY += 10;
 
-      const pageHeight = doc.internal.pageSize.height;
-      const signatureY = pageHeight - 40;
+      // ── QR CODE DE AUTENTICIDADE ────────────────────────────────────────────
+      const authPayload = JSON.stringify({
+        sistema: 'Aliancer',
+        documento: 'Orcamento',
+        id: quote.id,
+        cliente: customer?.name || '',
+        cpf: customer?.cpf || '',
+        total: (quote.total_value || 0).toFixed(2),
+        emissao: new Date(quote.created_at).toLocaleDateString('pt-BR'),
+        status: getStatusLabel(quote.status),
+        autenticidade: 'Documento legitimo emitido pelo Sistema Aliancer',
+      });
 
-      if (currentY < signatureY) {
-        currentY = signatureY;
+      let qrCodeB64: string | null = null;
+      try {
+        qrCodeB64 = await QRCode.toDataURL(authPayload, {
+          errorCorrectionLevel: 'M',
+          margin: 1,
+          width: 200,
+          color: { dark: '#0A7EC2', light: '#FFFFFF' },
+        });
+      } catch { /* qr not critical */ }
+
+      const qrSize = 28;
+      const sealBoxH = qrSize + 10;
+      const sealBoxW = 95;
+      const sealY = pageHeight - 52;
+      const sealX = pageWidth - margin - sealBoxW;
+
+      doc.setFillColor(245, 250, 255);
+      doc.setDrawColor(...primaryColor);
+      doc.setLineWidth(0.4);
+      doc.roundedRect(sealX, sealY, sealBoxW, sealBoxH, 2, 2, 'FD');
+
+      if (qrCodeB64) {
+        doc.addImage(qrCodeB64, 'PNG', sealX + 3, sealY + 4, qrSize, qrSize);
       }
 
-      doc.setTextColor(50, 50, 50);
-      doc.setFontSize(10);
+      const sealTextX = sealX + qrSize + 7;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(...primaryColor);
+      doc.text('DOCUMENTO AUTÊNTICO', sealTextX, sealY + 8);
+
       doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.setTextColor(...darkGray);
+      doc.text('Sistema Aliancer', sealTextX, sealY + 13);
+      doc.text('Aliancer Eng. e Topografia LTDA', sealTextX, sealY + 17.5);
 
-      const leftSignatureX = 14;
-      const rightSignatureX = 110;
-      const signatureWidth = 80;
+      doc.setFontSize(6);
+      doc.setTextColor(...midGray);
+      doc.text(`ID: ${quoteNumber}`, sealTextX, sealY + 22.5);
+      doc.text(`Emitido em: ${new Date(quote.created_at).toLocaleDateString('pt-BR')}`, sealTextX, sealY + 27);
+      doc.text('Escaneie para verificar', sealTextX, sealY + 31.5);
 
-      doc.setDrawColor(100, 100, 100);
+      // ── ASSINATURAS ─────────────────────────────────────────────────────────
+      const signatureAreaY = pageHeight - 52;
+      const signatureWidth = 75;
+
+      doc.setDrawColor(150, 150, 150);
       doc.setLineWidth(0.3);
-      doc.line(leftSignatureX, currentY, leftSignatureX + signatureWidth, currentY);
-      doc.line(rightSignatureX, currentY, rightSignatureX + signatureWidth, currentY);
+      doc.line(margin, signatureAreaY + 20, margin + signatureWidth, signatureAreaY + 20);
+      doc.line(margin, signatureAreaY + 34, margin + signatureWidth, signatureAreaY + 34);
 
-      currentY += 4;
-
-      doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
-      doc.text('Aliancer Engenharia e Topografia LTDA', leftSignatureX + (signatureWidth / 2), currentY, { align: 'center' });
-      doc.text(customer?.name || 'Cliente', rightSignatureX + (signatureWidth / 2), currentY, { align: 'center' });
-
       doc.setFontSize(8);
-      doc.setFont('helvetica', 'italic');
-      doc.setTextColor(100);
-      doc.text(footerText, 14, pageHeight - 10);
-      doc.text('Página 1', 196, pageHeight - 10, { align: 'right' });
+      doc.setTextColor(...darkGray);
+      doc.text('Aliancer Eng. e Topografia LTDA', margin + signatureWidth / 2, signatureAreaY + 25, { align: 'center' });
+      doc.text(customer?.name || 'Cliente', margin + signatureWidth / 2, signatureAreaY + 39, { align: 'center' });
 
-      doc.save(`orcamento_${customer?.name || 'cliente'}_${new Date(quote.created_at).toLocaleDateString('pt-BR').replace(/\//g, '-')}.pdf`);
+      doc.setFontSize(7);
+      doc.setTextColor(...midGray);
+      doc.text('Responsável pela Empresa', margin + signatureWidth / 2, signatureAreaY + 28.5, { align: 'center' });
+      doc.text('Assinatura do Cliente', margin + signatureWidth / 2, signatureAreaY + 42.5, { align: 'center' });
+
+      // ── FOOTER ──────────────────────────────────────────────────────────────
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'italic');
+      doc.setTextColor(...midGray);
+      doc.text(footerText, margin, pageHeight - 6);
+      doc.text('Página 1', pageWidth - margin, pageHeight - 6, { align: 'right' });
+
+      doc.save(`orcamento_${(customer?.name || 'cliente').replace(/\s+/g, '_')}_${new Date(quote.created_at).toLocaleDateString('pt-BR').replace(/\//g, '-')}.pdf`);
     } catch (error) {
       console.error('Erro ao gerar PDF:', error);
       alert('Erro ao gerar PDF do orçamento');
