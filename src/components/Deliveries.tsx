@@ -61,6 +61,7 @@ interface Delivery {
   id: string;
   delivery_date: string;
   auto_created?: boolean;
+  parent_delivery_id?: string;
   quote_id?: string;
   customer_id?: string;
   status: 'open' | 'in_progress' | 'closed';
@@ -105,6 +106,7 @@ export default function Deliveries() {
   const [itemQuantities, setItemQuantities] = useState<{ [key: string]: number }>({});
   const [showRomaneioModal, setShowRomaneioModal] = useState(false);
   const [romaneioDelivery, setRomaneioDelivery] = useState<Delivery | null>(null);
+  const [romaneioDeliveryItems, setRomaneioDeliveryItems] = useState<any[]>([]);
   const [companySettings, setCompanySettings] = useState<Record<string, string>>({});
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -181,24 +183,6 @@ export default function Deliveries() {
   const handleOpenRomaneioDelivery = async (delivery: Delivery) => {
     let enriched = { ...delivery };
 
-    // Load quote items if delivery has a quote
-    const quoteItemsIncomplete = !delivery.quotes?.quote_items || delivery.quotes.quote_items.length === 0 ||
-      !(delivery.quotes.quote_items[0] as any)?.products && !(delivery.quotes.quote_items[0] as any)?.materials && !(delivery.quotes.quote_items[0] as any)?.compositions;
-    if (delivery.quote_id && (!delivery.quotes || !delivery.quotes.customers || quoteItemsIncomplete)) {
-      const { data: quoteData } = await supabase
-        .from('quotes')
-        .select(`
-          id, customer_id, status, total_value,
-          customers (id, name, cpf, phone, street, neighborhood, city),
-          quote_items (*, products(name), materials(name, unit), compositions(name, total_cost))
-        `)
-        .eq('id', delivery.quote_id)
-        .maybeSingle();
-      if (quoteData) {
-        enriched = { ...enriched, quotes: quoteData as any };
-      }
-    }
-
     // Load customer if delivery has direct customer
     if (delivery.customer_id && !enriched.customers?.name) {
       const { data: custData } = await supabase
@@ -211,7 +195,32 @@ export default function Deliveries() {
       }
     }
 
+    // Load quote customer if needed as fallback
+    if (delivery.quote_id && (!enriched.customers?.name)) {
+      const { data: quoteData } = await supabase
+        .from('quotes')
+        .select('id, customers (id, name, cpf, phone, street, neighborhood, city)')
+        .eq('id', delivery.quote_id)
+        .maybeSingle();
+      if (quoteData) {
+        enriched = { ...enriched, quotes: { ...enriched.quotes, ...quoteData } as any };
+      }
+    }
+
+    // Load delivery_items for this specific delivery
+    const { data: itemsData } = await supabase
+      .from('delivery_items')
+      .select(`
+        id, item_type, item_name, quantity, loaded_quantity, unit_price, notes,
+        products (name, unit),
+        materials (name, unit),
+        compositions (name)
+      `)
+      .eq('delivery_id', delivery.id)
+      .order('id');
+
     setRomaneioDelivery(enriched);
+    setRomaneioDeliveryItems(itemsData || []);
     setShowRomaneioModal(true);
   };
 
@@ -2099,8 +2108,14 @@ export default function Deliveries() {
                           {delivery.status === 'closed' ? 'Finalizada' :
                            delivery.status === 'in_progress' ? 'Em Progresso' : 'Aguardando'}
                         </span>
-                        {delivery.auto_created && (
-                          <span className="px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 flex items-center gap-1">
+                        {delivery.auto_created && delivery.parent_delivery_id && (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 flex items-center gap-1 whitespace-nowrap">
+                            <Truck className="h-3 w-3" />
+                            Residual
+                          </span>
+                        )}
+                        {delivery.auto_created && !delivery.parent_delivery_id && (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 flex items-center gap-1">
                             <CheckCircle className="h-3 w-3" />
                             Auto
                           </span>
@@ -2295,8 +2310,9 @@ export default function Deliveries() {
         <RomaneioModal
           source="delivery"
           delivery={romaneioDelivery}
+          deliveryItems={romaneioDeliveryItems}
           companySettings={companySettings}
-          onClose={() => { setShowRomaneioModal(false); setRomaneioDelivery(null); }}
+          onClose={() => { setShowRomaneioModal(false); setRomaneioDelivery(null); setRomaneioDeliveryItems([]); }}
         />
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, FileText, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { generateRomaneioPDF, RomaneioData, RomaneioItem } from '../lib/romaneioGenerator';
@@ -42,15 +42,29 @@ interface RomaneioDelivery {
   quotes?: RomaneioQuote;
 }
 
+interface DeliveryItemForRomaneio {
+  id?: string;
+  item_type?: string;
+  item_name?: string;
+  quantity: number;
+  loaded_quantity?: number;
+  unit_price?: number;
+  notes?: string;
+  products?: { name: string; unit?: string };
+  materials?: { name: string; unit?: string };
+  compositions?: { name: string };
+}
+
 interface RomaneioModalProps {
   source: 'quote' | 'delivery';
   quote?: RomaneioQuote;
   delivery?: RomaneioDelivery;
+  deliveryItems?: DeliveryItemForRomaneio[];
   companySettings: Record<string, string>;
   onClose: () => void;
 }
 
-export default function RomaneioModal({ source, quote, delivery, companySettings, onClose }: RomaneioModalProps) {
+export default function RomaneioModal({ source, quote, delivery, deliveryItems, companySettings, onClose }: RomaneioModalProps) {
   const resolvedQuote = source === 'quote' ? quote : delivery?.quotes;
   const resolvedCustomer = resolvedQuote?.customers || delivery?.customers;
   const resolvedDelivery = source === 'delivery' ? delivery : null;
@@ -78,14 +92,78 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
 
   const customerName = resolvedCustomer?.name || '';
 
+  useEffect(() => {
+    if (!driverName && !vehiclePlate) {
+      supabase
+        .from('romaneios_log')
+        .select('driver_name, vehicle_plate')
+        .not('driver_name', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (data) {
+            if (data.driver_name) setDriverName(data.driver_name);
+            if (data.vehicle_plate) setVehiclePlate(data.vehicle_plate);
+          }
+        });
+    }
+  }, []);
+
+  const buildRomaneioItems = (): RomaneioItem[] => {
+    if (source === 'delivery' && deliveryItems && deliveryItems.length > 0) {
+      return deliveryItems.map((item) => {
+        const name =
+          item.item_name ||
+          item.products?.name ||
+          item.materials?.name ||
+          item.compositions?.name ||
+          'Item';
+        const unit = item.materials?.unit || item.products?.unit || 'un';
+        const qty = Number(item.loaded_quantity ?? item.quantity);
+        const unitP = item.unit_price || 0;
+        return {
+          name,
+          quantity: qty,
+          unit,
+          unit_price: unitP,
+          total_price: unitP * qty,
+          notes: item.notes,
+        };
+      });
+    }
+
+    const items = resolvedQuote?.quote_items;
+    if (!items || items.length === 0) return [];
+
+    return items.map((it) => {
+      const name =
+        it.item_name ||
+        it.products?.name ||
+        it.materials?.name ||
+        it.compositions?.name ||
+        'Item';
+      const unit = it.materials?.unit || 'un';
+      const unitP = it.proposed_price || 0;
+      return {
+        name,
+        quantity: Number(it.quantity),
+        unit,
+        unit_price: unitP,
+        total_price: unitP * Number(it.quantity),
+        notes: it.notes,
+      };
+    });
+  };
+
   const handleGenerate = async () => {
     if (!customerName) {
       setError('Cliente não encontrado. Verifique o orçamento ou entrega.');
       return;
     }
 
-    const items = resolvedQuote?.quote_items;
-    if (!items || items.length === 0) {
+    const romaneioItems = buildRomaneioItems();
+    if (romaneioItems.length === 0) {
       setError('Nenhum item encontrado no orçamento/entrega.');
       return;
     }
@@ -97,28 +175,10 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
       const includeP = incluirPrecos === 'sim';
       const freteVal = parseFloat(frete.replace(',', '.')) || 0;
 
-      const romaneioItems: RomaneioItem[] = items.map((it) => {
-        const name =
-          it.item_name ||
-          it.products?.name ||
-          it.materials?.name ||
-          it.compositions?.name ||
-          'Item';
-        const unit = it.materials?.unit || 'un';
-        const unitP = it.proposed_price || 0;
-        return {
-          name,
-          quantity: Number(it.quantity),
-          unit,
-          unit_price: unitP,
-          total_price: unitP * Number(it.quantity),
-          notes: it.notes,
-        };
-      });
-
       const subtotal = romaneioItems.reduce((s, i) => s + i.total_price, 0);
       const totalGeral = subtotal + freteVal;
 
+      const quoteId = resolvedQuote?.id || delivery?.quote_id || '';
       const numero = source === 'delivery'
         ? `ENT-${(resolvedDelivery?.id || '').substring(0, 8).toUpperCase()}`
         : `ORC-${(resolvedQuote?.id || '').substring(0, 8).toUpperCase()}`;
@@ -134,7 +194,8 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
       ].filter(Boolean);
 
       const data: RomaneioData = {
-        id: resolvedQuote?.id || resolvedDelivery?.id || '',
+        id: resolvedDelivery?.id || resolvedQuote?.id || '',
+        quoteId,
         tipo: source,
         numero,
         emissao: now,
@@ -175,7 +236,6 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
       const pdfBytes = await generateRomaneioPDF(data);
       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
 
-      // Download
       const timestamp = Date.now();
       const filename = `romaneio_${numero}_${timestamp}.pdf`;
       const url = URL.createObjectURL(blob);
@@ -185,7 +245,6 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
       a.click();
       URL.revokeObjectURL(url);
 
-      // Save to Supabase Storage
       let pathPdf = '';
       try {
         const { data: uploadData, error: uploadError } = await supabase.storage
@@ -196,9 +255,8 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
         }
       } catch { /* storage optional */ }
 
-      // Log
       await supabase.from('romaneios_log').insert({
-        quote_id: resolvedQuote?.id || null,
+        quote_id: quoteId || null,
         delivery_id: source === 'delivery' ? resolvedDelivery?.id : null,
         customer_name: customerName,
         path_pdf: pathPdf,
@@ -223,7 +281,6 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
-        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center">
@@ -244,15 +301,15 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
           </button>
         </div>
 
-        {/* Body */}
         <div className="px-6 py-5 space-y-4">
-          {/* Cliente */}
           <div className="bg-gray-50 rounded-xl px-4 py-3">
             <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Cliente</span>
             <p className="text-base font-semibold text-gray-900 mt-0.5">{customerName || '—'}</p>
+            {source === 'delivery' && deliveryItems && (
+              <p className="text-xs text-gray-500 mt-1">{deliveryItems.length} item(s) desta entrega</p>
+            )}
           </div>
 
-          {/* Incluir valores */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Incluir valores unitários e totais no PDF?
@@ -276,7 +333,6 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
             </div>
           </div>
 
-          {/* Dados de entrega */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Motorista</label>
@@ -351,7 +407,6 @@ export default function RomaneioModal({ source, quote, delivery, companySettings
           )}
         </div>
 
-        {/* Footer */}
         <div className="flex gap-3 px-6 py-4 border-t border-gray-100">
           <button
             onClick={onClose}

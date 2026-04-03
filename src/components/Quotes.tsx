@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, Printer, X, CreditCard, DollarSign, FileText, Package2, ArrowLeft, Building2, Search, Lock, Unlock, Wallet, ClipboardList } from 'lucide-react';
+import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, Printer, X, CreditCard, DollarSign, FileText, Package2, ArrowLeft, Building2, Search, Lock, Unlock, Wallet, ClipboardList, QrCode, Copy, Check } from 'lucide-react';
 import CustomerCreditManager from './CustomerCreditManager';
 import RomaneioModal from './RomaneioModal';
+import QRCode from 'qrcode';
 import { supabase } from '../lib/supabase';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -137,6 +138,11 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
 
   const [showRomaneioModal, setShowRomaneioModal] = useState(false);
   const [romaneioQuote, setRomaneioQuote] = useState<Quote | null>(null);
+
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrQuote, setQrQuote] = useState<Quote | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrLinkCopied, setQrLinkCopied] = useState(false);
 
   const [formData, setFormData] = useState({
     customer_id: '',
@@ -396,6 +402,25 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
 
     setRomaneioQuote(targetQuote);
     setShowRomaneioModal(true);
+  }, []);
+
+  const handleOpenQr = useCallback(async (q: Quote) => {
+    const payload = JSON.stringify({
+      orcamento: `ORC-${q.id.substring(0, 8).toUpperCase()}`,
+      cliente: q.customers?.name || '',
+      data: new Date(q.created_at).toLocaleDateString('pt-BR'),
+      quoteId: q.id,
+      total: q.total_value || 0,
+    });
+    try {
+      const dataUrl = await QRCode.toDataURL(payload, { width: 256, margin: 2, color: { dark: '#1a1a1a', light: '#ffffff' } });
+      setQrDataUrl(dataUrl);
+    } catch {
+      setQrDataUrl('');
+    }
+    setQrQuote(q);
+    setQrLinkCopied(false);
+    setShowQrModal(true);
   }, []);
 
   const handleProductChange = useCallback((productId: string) => {
@@ -2413,6 +2438,13 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
                               <ClipboardList className="w-4 h-4" />
                             </button>
                           )}
+                          <button
+                            onClick={() => handleOpenQr(quote)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all hover:scale-105"
+                            title="QR Code de Acesso Rápido"
+                          >
+                            <QrCode className="w-4 h-4" />
+                          </button>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -3147,6 +3179,77 @@ export default function Quotes({ highlightQuoteId, onQuoteOpened, receivableId, 
           companySettings={companySettings}
           onClose={() => { setShowRomaneioModal(false); setRomaneioQuote(null); }}
         />
+      )}
+
+      {showQrModal && qrQuote && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                  <QrCode className="w-5 h-5 text-blue-700" />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-gray-900">QR Code de Acesso</h2>
+                  <p className="text-xs text-gray-500">ORC-{qrQuote.id.substring(0, 8).toUpperCase()}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setShowQrModal(false); setQrQuote(null); setQrDataUrl(''); }}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="px-6 py-5 flex flex-col items-center gap-4">
+              <div className="bg-gray-50 rounded-xl px-4 py-2 w-full text-center">
+                <p className="text-xs text-gray-500">Cliente</p>
+                <p className="font-semibold text-gray-900">{qrQuote.customers?.name || '—'}</p>
+              </div>
+
+              {qrDataUrl ? (
+                <div className="p-3 bg-white border border-gray-200 rounded-xl shadow-sm">
+                  <img src={qrDataUrl} alt="QR Code" className="w-48 h-48" />
+                </div>
+              ) : (
+                <div className="w-48 h-48 bg-gray-100 rounded-xl flex items-center justify-center">
+                  <p className="text-gray-400 text-sm">Gerando...</p>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-500 text-center">
+                Escaneie para identificar o orçamento e confirmar autenticidade
+              </p>
+
+              <div className="flex gap-3 w-full">
+                {qrDataUrl && (
+                  <a
+                    href={qrDataUrl}
+                    download={`qr_ORC-${qrQuote.id.substring(0, 8).toUpperCase()}.png`}
+                    className="flex-1 py-2.5 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-xl transition-colors flex items-center justify-center gap-2"
+                  >
+                    <QrCode className="w-4 h-4" />
+                    Baixar QR
+                  </a>
+                )}
+                <button
+                  onClick={() => {
+                    const text = `ORC-${qrQuote.id.substring(0, 8).toUpperCase()} | ${qrQuote.customers?.name || ''} | ID: ${qrQuote.id}`;
+                    navigator.clipboard.writeText(text).then(() => {
+                      setQrLinkCopied(true);
+                      setTimeout(() => setQrLinkCopied(false), 2000);
+                    });
+                  }}
+                  className="flex-1 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors flex items-center justify-center gap-2"
+                >
+                  {qrLinkCopied ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+                  {qrLinkCopied ? 'Copiado!' : 'Copiar ID'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

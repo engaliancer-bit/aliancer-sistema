@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import QRCode from 'qrcode';
 
 export interface RomaneioItem {
   name: string;
@@ -12,6 +13,7 @@ export interface RomaneioItem {
 
 export interface RomaneioData {
   id: string;
+  quoteId?: string;
   tipo: 'orcamento' | 'entrega';
   numero: string;
   emissao: Date;
@@ -71,97 +73,110 @@ async function loadImageAsBase64(url: string): Promise<string | null> {
   }
 }
 
+async function generateQRCodeBase64(text: string): Promise<string | null> {
+  try {
+    const dataUrl = await QRCode.toDataURL(text, {
+      width: 120,
+      margin: 1,
+      color: { dark: '#1a1a1a', light: '#ffffff' },
+    });
+    return dataUrl;
+  } catch {
+    return null;
+  }
+}
+
 export async function generateRomaneioPDF(data: RomaneioData): Promise<Uint8Array> {
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
-  const margin = 10;
+  const margin = 12;
   const contentW = pageW - margin * 2;
 
-  const primaryColor: [number, number, number] = [10, 126, 194];
-  const darkGray: [number, number, number] = [50, 50, 50];
-  const lightGray: [number, number, number] = [245, 245, 245];
+  const primaryColor: [number, number, number] = [10, 90, 160];
+  const darkGray: [number, number, number] = [40, 40, 40];
+  const lightGray: [number, number, number] = [245, 246, 248];
   const midGray: [number, number, number] = [120, 120, 120];
   const white: [number, number, number] = [255, 255, 255];
-  const green: [number, number, number] = [22, 163, 74];
+  const borderGray: [number, number, number] = [210, 215, 220];
 
   let yPos = margin;
 
-  // ─── HEADER ───────────────────────────────────────────────────────────────
-  // Header background
-  doc.setFillColor(...primaryColor);
-  doc.rect(0, 0, pageW, 28, 'F');
-
-  // Logo
+  // ─── HEADER (white background) ────────────────────────────────────────────
   let logoLoaded = false;
   if (data.empresa.logo_url) {
     const logoB64 = await loadImageAsBase64(data.empresa.logo_url);
     if (logoB64) {
       try {
-        doc.addImage(logoB64, 'PNG', margin, 4, 20, 20);
+        doc.addImage(logoB64, 'PNG', margin, yPos, 22, 22);
         logoLoaded = true;
       } catch { /* ignore */ }
     }
   }
 
-  const textStart = logoLoaded ? margin + 24 : margin;
+  const textStart = logoLoaded ? margin + 26 : margin;
 
-  // Company name
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
-  doc.setTextColor(...white);
-  doc.text(data.empresa.name || 'Aliancer', textStart, 11);
+  doc.setTextColor(...darkGray);
+  doc.text(data.empresa.name || 'Aliancer', textStart, yPos + 8);
 
-  // Company sub-info
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
+  doc.setTextColor(...midGray);
   const companyLine: string[] = [];
   if (data.empresa.cnpj) companyLine.push(`CNPJ: ${data.empresa.cnpj}`);
   if (data.empresa.phone) companyLine.push(`Tel: ${data.empresa.phone}`);
   if (data.empresa.email) companyLine.push(data.empresa.email);
-  if (companyLine.length) doc.text(companyLine.join('  |  '), textStart, 16.5);
-  if (data.empresa.address) doc.text(data.empresa.address, textStart, 21);
+  if (companyLine.length) doc.text(companyLine.join('  |  '), textStart, yPos + 14);
+  if (data.empresa.address) doc.text(data.empresa.address, textStart, yPos + 19);
 
   // Title block (right side)
-  const titleX = pageW - 95;
-  doc.setFillColor(255, 255, 255, 0.15);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14);
-  doc.setTextColor(...white);
-  const titleLabel = 'ROMANEIO DE ENTREGA';
-  doc.text(titleLabel, pageW - margin, 10, { align: 'right' });
+  doc.setFontSize(15);
+  doc.setTextColor(...primaryColor);
+  doc.text('ROMANEIO DE ENTREGA', pageW - margin, yPos + 8, { align: 'right' });
 
-  doc.setFontSize(9);
+  doc.setFontSize(8.5);
   doc.setFont('helvetica', 'normal');
-  doc.text(`Nº ${data.numero}`, pageW - margin, 16, { align: 'right' });
-  doc.text(`Emissão: ${formatDateTime(data.emissao)}`, pageW - margin, 21, { align: 'right' });
-  doc.text(`Válido até: ${formatDate(data.validade)}`, pageW - margin, 25.5, { align: 'right' });
+  doc.setTextColor(...darkGray);
+  doc.text(`Nº ${data.numero}`, pageW - margin, yPos + 15, { align: 'right' });
+  doc.text(`Emissão: ${formatDateTime(data.emissao)}`, pageW - margin, yPos + 21, { align: 'right' });
 
-  yPos = 32;
+  yPos += 26;
+
+  // Separator line
+  doc.setDrawColor(...borderGray);
+  doc.setLineWidth(0.5);
+  doc.line(margin, yPos, pageW - margin, yPos);
+
+  yPos += 5;
 
   // ─── CLIENTE + ENTREGA ────────────────────────────────────────────────────
   const colW = (contentW - 4) / 2;
 
   // Cliente card
   doc.setFillColor(...lightGray);
-  doc.roundedRect(margin, yPos, colW, 28, 2, 2, 'F');
-  doc.setDrawColor(220, 220, 220);
-  doc.roundedRect(margin, yPos, colW, 28, 2, 2, 'S');
+  doc.roundedRect(margin, yPos, colW, 30, 2, 2, 'F');
+  doc.setDrawColor(...borderGray);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(margin, yPos, colW, 30, 2, 2, 'S');
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
+  doc.setFontSize(7);
   doc.setTextColor(...primaryColor);
   doc.text('CLIENTE', margin + 3, yPos + 5);
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(...darkGray);
-  doc.text(data.cliente.name || '-', margin + 3, yPos + 11);
+  const clientNameLines = doc.splitTextToSize(data.cliente.name || '-', colW - 6);
+  doc.text(clientNameLines[0], margin + 3, yPos + 11);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(...midGray);
-  let clientY = yPos + 16;
+  let clientY = yPos + 17;
   if (data.cliente.cpf_cnpj) {
     doc.text(`CPF/CNPJ: ${data.cliente.cpf_cnpj}`, margin + 3, clientY);
     clientY += 4.5;
@@ -173,18 +188,18 @@ export async function generateRomaneioPDF(data: RomaneioData): Promise<Uint8Arra
   if (data.cliente.address) {
     const maxW = colW - 6;
     const lines = doc.splitTextToSize(data.cliente.address, maxW);
-    doc.text(lines.slice(0, 2), margin + 3, clientY);
+    doc.text(lines.slice(0, 1), margin + 3, clientY);
   }
 
   // Entrega card
   const col2X = margin + colW + 4;
   doc.setFillColor(...lightGray);
-  doc.roundedRect(col2X, yPos, colW, 28, 2, 2, 'F');
-  doc.setDrawColor(220, 220, 220);
-  doc.roundedRect(col2X, yPos, colW, 28, 2, 2, 'S');
+  doc.roundedRect(col2X, yPos, colW, 30, 2, 2, 'F');
+  doc.setDrawColor(...borderGray);
+  doc.roundedRect(col2X, yPos, colW, 30, 2, 2, 'S');
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
+  doc.setFontSize(7);
   doc.setTextColor(...primaryColor);
   doc.text('DADOS DA ENTREGA', col2X + 3, yPos + 5);
 
@@ -195,22 +210,25 @@ export async function generateRomaneioPDF(data: RomaneioData): Promise<Uint8Arra
 
   const entFields: [string, string][] = [
     ['Motorista:', data.entrega.driver_name || '______________________'],
-    ['Placa:', data.entrega.vehicle_plate || '______________________'],
-    ['Data/Hora prevista:', data.entrega.scheduled_at ? formatDateTime(data.entrega.scheduled_at) : '__/__/____ __:__'],
-    ['Endereço destino:', data.entrega.address || data.cliente.address || '______________________'],
+    ['Placa:', data.entrega.vehicle_plate || '__________'],
+    ['Data/Hora:', data.entrega.scheduled_at ? formatDateTime(data.entrega.scheduled_at) : '__/__/____ __:__'],
+    ['Destino:', data.entrega.address || data.cliente.address || '______________________'],
   ];
   for (const [label, val] of entFields) {
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...midGray);
     doc.text(label, col2X + 3, entY);
     doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...darkGray);
     const labelW = doc.getTextWidth(label) + 2;
     const maxW = colW - 6 - labelW;
     const lines = doc.splitTextToSize(val, maxW);
     doc.text(lines[0], col2X + 3 + labelW, entY);
-    entY += 4.5;
+    entY += 4.8;
   }
 
-  yPos += 31;
+  yPos += 34;
 
   // ─── TABELA DE ITENS ──────────────────────────────────────────────────────
   const tableColumns = data.incluirPrecos
@@ -218,9 +236,9 @@ export async function generateRomaneioPDF(data: RomaneioData): Promise<Uint8Arra
         { header: 'Item / Produto', dataKey: 'name' },
         { header: 'Qtd.', dataKey: 'qty' },
         { header: 'Und.', dataKey: 'unit' },
-        { header: 'Valor Unit.', dataKey: 'unit_price' },
-        { header: 'Valor Total', dataKey: 'total' },
-        { header: 'Observações', dataKey: 'notes' },
+        { header: 'Vlr. Unit.', dataKey: 'unit_price' },
+        { header: 'Vlr. Total', dataKey: 'total' },
+        { header: 'Obs.', dataKey: 'notes' },
       ]
     : [
         { header: 'Item / Produto', dataKey: 'name' },
@@ -239,14 +257,14 @@ export async function generateRomaneioPDF(data: RomaneioData): Promise<Uint8Arra
   }));
 
   const columnStyles: Record<string, object> = {
-    name: { cellWidth: data.incluirPrecos ? 80 : 120 },
-    qty: { cellWidth: 20, halign: 'center' },
-    unit: { cellWidth: 16, halign: 'center' },
+    name: { cellWidth: data.incluirPrecos ? 70 : 110 },
+    qty: { cellWidth: 18, halign: 'center' },
+    unit: { cellWidth: 14, halign: 'center' },
     notes: { cellWidth: 'auto' },
   };
   if (data.incluirPrecos) {
-    columnStyles['unit_price'] = { cellWidth: 30, halign: 'right' };
-    columnStyles['total'] = { cellWidth: 30, halign: 'right' };
+    columnStyles['unit_price'] = { cellWidth: 26, halign: 'right' };
+    columnStyles['total'] = { cellWidth: 26, halign: 'right' };
   }
 
   autoTable(doc, {
@@ -267,24 +285,23 @@ export async function generateRomaneioPDF(data: RomaneioData): Promise<Uint8Arra
       cellPadding: { top: 2.5, bottom: 2.5, left: 3, right: 3 },
     },
     alternateRowStyles: {
-      fillColor: [250, 250, 250],
+      fillColor: [250, 251, 252],
     },
     margin: { left: margin, right: margin },
     tableWidth: contentW,
     theme: 'grid',
     styles: {
-      lineColor: [220, 220, 220],
+      lineColor: borderGray,
       lineWidth: 0.1,
       overflow: 'linebreak',
     },
-    didDrawPage: () => {
-      // Footer on each page
-      doc.setFontSize(7);
+    didDrawPage: (_hookData) => {
+      doc.setFontSize(6.5);
       doc.setTextColor(...midGray);
       doc.text(
-        `Aliancer Engenharia e Topografia LTDA | ${data.empresa.cnpj ? `CNPJ ${data.empresa.cnpj} | ` : ''}Lei 10.833/2003 (NF-e compatível)`,
+        `${data.empresa.name}${data.empresa.cnpj ? ` | CNPJ ${data.empresa.cnpj}` : ''}`,
         pageW / 2,
-        pageH - 4,
+        pageH - 5,
         { align: 'center' }
       );
     },
@@ -292,97 +309,144 @@ export async function generateRomaneioPDF(data: RomaneioData): Promise<Uint8Arra
 
   const finalY = (doc as any).lastAutoTable.finalY || yPos + 40;
 
-  // ─── RODAPÉ TOTAIS ────────────────────────────────────────────────────────
+  // ─── TOTAIS ────────────────────────────────────────────────────────────────
   if (data.incluirPrecos) {
-    const totalsY = Math.min(finalY + 3, pageH - 50);
-    const totalsX = pageW - margin - 90;
-    const totalsW = 90;
+    const totalsW = 80;
+    const totalsX = pageW - margin - totalsW;
+    const totalsY = finalY + 4;
 
     doc.setFillColor(...lightGray);
-    doc.roundedRect(totalsX, totalsY, totalsW, 22, 2, 2, 'F');
-    doc.setDrawColor(220, 220, 220);
-    doc.roundedRect(totalsX, totalsY, totalsW, 22, 2, 2, 'S');
+    doc.roundedRect(totalsX, totalsY, totalsW, 20, 2, 2, 'F');
+    doc.setDrawColor(...borderGray);
+    doc.roundedRect(totalsX, totalsY, totalsW, 20, 2, 2, 'S');
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
     doc.setTextColor(...midGray);
 
-    const icms = data.subtotal * 0.18;
-    const rows: [string, string][] = [
+    const totalsRows: [string, string][] = [
       ['Subtotal:', formatCurrency(data.subtotal)],
-      ['ICMS 18%:', formatCurrency(icms)],
       ['Frete:', formatCurrency(data.frete)],
     ];
 
     let ty = totalsY + 6;
-    for (const [label, val] of rows) {
+    for (const [label, val] of totalsRows) {
       doc.text(label, totalsX + 4, ty);
       doc.text(val, totalsX + totalsW - 4, ty, { align: 'right' });
-      ty += 4.5;
+      ty += 5;
     }
 
-    // Total line
-    doc.setDrawColor(...primaryColor);
-    doc.setLineWidth(0.5);
-    doc.line(totalsX + 4, ty - 1, totalsX + totalsW - 4, ty - 1);
+    doc.setDrawColor(...primaryColor as [number, number, number]);
+    doc.setLineWidth(0.4);
+    doc.line(totalsX + 4, ty - 1.5, totalsX + totalsW - 4, ty - 1.5);
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(...primaryColor);
-    doc.text('TOTAL GERAL:', totalsX + 4, ty + 4);
+    doc.text('TOTAL:', totalsX + 4, ty + 4);
     doc.text(formatCurrency(data.total_geral), totalsX + totalsW - 4, ty + 4, { align: 'right' });
   }
 
-  // ─── ACEITE / ASSINATURA ──────────────────────────────────────────────────
-  const aceiteY = Math.min(finalY + (data.incluirPrecos ? 30 : 6), pageH - 35);
+  // ─── CANHOTO DESTACAVEL ────────────────────────────────────────────────────
+  const canhoW = data.incluirPrecos ? 75 : contentW;
+  const canhoX = margin;
+  const canhoY = Math.min(
+    finalY + (data.incluirPrecos ? 28 : 8),
+    pageH - 55
+  );
 
-  doc.setFillColor(255, 248, 220);
-  doc.setDrawColor(234, 179, 8);
+  // Dotted cut line
+  doc.setDrawColor(150, 150, 150);
   doc.setLineWidth(0.3);
-  doc.roundedRect(margin, aceiteY, contentW, 20, 2, 2, 'FD');
+  doc.setLineDashPattern([1, 1.5], 0);
+  doc.line(margin, canhoY - 2, pageW - margin, canhoY - 2);
+  doc.setLineDashPattern([], 0);
 
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.5);
+  doc.setTextColor(...midGray);
+  doc.text('- - - - CANHOTO DO CLIENTE - - - -', pageW / 2, canhoY + 1, { align: 'center' });
+
+  const receiptH = 42;
+  doc.setFillColor(252, 253, 255);
+  doc.setDrawColor(...borderGray);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(margin, canhoY + 4, contentW, receiptH, 2, 2, 'FD');
+
+  // Left section: fields
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
-  doc.setTextColor(...darkGray);
-  doc.text('RECEBIMENTO E ACEITE', margin + 3, aceiteY + 5);
+  doc.setTextColor(...primaryColor);
+  doc.text('RECEBIMENTO DE ENTREGA', canhoX + 4, canhoY + 11);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
-  doc.setTextColor(80, 80, 80);
-  doc.text(
-    'Recebi os itens acima listados em perfeito estado e autorizo o início da descarga.',
-    margin + 3, aceiteY + 10
-  );
+  doc.setTextColor(...darkGray);
 
-  const sigY = aceiteY + 17;
-  const sigSpacing = contentW / 3;
-
-  const sigFields = [
-    ['Assinatura do Cliente:', '_________________________'],
-    ['Data: _____/_____/_____', ''],
-    ['Testemunha:', '_________________________'],
+  const receiptFields: [string, string][] = [
+    ['Romaneio:', data.numero],
+    ['Cliente:', data.cliente.name],
+    ['Data:', `${formatDate(data.emissao)}`],
   ];
 
-  sigFields.forEach(([label, line], i) => {
-    const sx = margin + i * sigSpacing + 3;
+  let ry = canhoY + 17;
+  for (const [lbl, val] of receiptFields) {
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
+    doc.setTextColor(...midGray);
+    doc.text(lbl, canhoX + 4, ry);
+    doc.setFont('helvetica', 'normal');
     doc.setTextColor(...darkGray);
-    doc.text(label, sx, sigY);
-    if (line) {
-      doc.setFont('helvetica', 'normal');
-      doc.text(line, sx, sigY + 3.5);
-    }
+    const lw = doc.getTextWidth(lbl) + 2;
+    doc.text(val, canhoX + 4 + lw, ry);
+    ry += 5;
+  }
+
+  // Signature lines
+  const sigY = canhoY + 37;
+  const sigW = (contentW - 44) / 2;
+  doc.setDrawColor(...borderGray);
+  doc.setLineWidth(0.3);
+  doc.line(canhoX + 4, sigY, canhoX + 4 + sigW, sigY);
+  doc.line(canhoX + 4 + sigW + 12, sigY, canhoX + 4 + sigW * 2 + 12, sigY);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.5);
+  doc.setTextColor(...midGray);
+  doc.text('Assinatura do Recebedor', canhoX + 4, sigY + 4);
+  doc.text('Testemunha / Data', canhoX + 4 + sigW + 12, sigY + 4);
+
+  // QR code (right section of canhoto)
+  const qrPayload = JSON.stringify({
+    romaneio: data.numero,
+    cliente: data.cliente.name,
+    emissao: formatDate(data.emissao),
+    quoteId: data.quoteId || data.id,
+    itens: data.itens.length,
+    total: data.total_geral,
   });
 
+  const qrB64 = await generateQRCodeBase64(qrPayload);
+  if (qrB64) {
+    const qrSize = 30;
+    const qrX = pageW - margin - qrSize - 4;
+    const qrY = canhoY + 7;
+    try {
+      doc.addImage(qrB64, 'PNG', qrX, qrY, qrSize, qrSize);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6);
+      doc.setTextColor(...midGray);
+      doc.text('QR de Autenticidade', qrX + qrSize / 2, qrY + qrSize + 3.5, { align: 'center' });
+    } catch { /* ignore */ }
+  }
+
   // ─── FOOTER ───────────────────────────────────────────────────────────────
-  doc.setFontSize(7);
+  doc.setFontSize(6.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(...midGray);
   doc.text(
-    `Aliancer Engenharia e Topografia LTDA | ${data.empresa.cnpj ? `CNPJ ${data.empresa.cnpj} | ` : ''}Lei 10.833/2003 (NF-e compatível)`,
+    `${data.empresa.name}${data.empresa.cnpj ? ` | CNPJ ${data.empresa.cnpj}` : ''}`,
     pageW / 2,
-    pageH - 4,
+    pageH - 5,
     { align: 'center' }
   );
 
