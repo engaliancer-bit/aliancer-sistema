@@ -58,6 +58,8 @@ interface ProductOption {
   id: string;
   name: string;
   unit: string;
+  code?: string;
+  product_type?: string;
 }
 
 interface Props {
@@ -447,7 +449,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
     if (query.trim().length < 2) { setProductOptions([]); return; }
     const { data } = await supabase
       .from('products')
-      .select('id, name, unit')
+      .select('id, name, unit, code, product_type')
       .ilike('name', `%${query}%`)
       .limit(20);
     setProductOptions(data || []);
@@ -1274,9 +1276,9 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                           )}
                         </div>
                         {opDisplayName && (
-                          <div className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
-                            {order.composition_id ? <Layers className="w-4 h-4 text-teal-600 flex-shrink-0" /> : <Package className="w-4 h-4 text-blue-500 flex-shrink-0" />}
-                            {opDisplayName}
+                          <div className="text-sm font-semibold text-gray-700 mb-2 flex items-start gap-2">
+                            {order.composition_id ? <Layers className="w-4 h-4 text-teal-600 flex-shrink-0 mt-0.5" /> : <Package className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />}
+                            <span className="break-words whitespace-normal leading-snug">{opDisplayName}</span>
                           </div>
                         )}
                         <div className="flex items-center gap-3 mb-3 flex-wrap">
@@ -1341,7 +1343,7 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                                 </div>
 
                                 <div className="flex-1 min-w-0">
-                                  <div className="font-medium text-gray-800 text-sm truncate">{itemName}</div>
+                                  <div className="font-medium text-gray-800 text-sm break-words whitespace-normal leading-snug">{itemName}</div>
                                   <div className="text-xs text-gray-500">
                                     {fmtQty(item.produced_quantity)}/{fmtQty(item.quantity)} {itemUnit}
                                     <span className="ml-2 text-gray-400">({itemProgress}%)</span>
@@ -1430,26 +1432,40 @@ export default function ProductionByQuote({ onSelectItem, onGenerateLabel, refre
                   />
                 </div>
                 {productOptions.length > 0 && !selectedProduct && (
-                  <div className="mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                  <div className="mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
                     {productOptions.map(p => (
                       <button
                         key={p.id}
                         onClick={() => { setSelectedProduct(p); setProductSearch(p.name); setProductOptions([]); }}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b border-gray-100 last:border-0"
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-blue-50 border-b border-gray-100 last:border-0"
                       >
-                        <span className="font-medium text-gray-800">{p.name}</span>
-                        <span className="ml-2 text-xs text-gray-400">{p.unit}</span>
+                        <div className="font-medium text-gray-800 break-words whitespace-normal leading-snug">{p.name}</div>
+                        <div className="text-xs text-gray-400 mt-0.5">
+                          {p.code && <span>{p.code}</span>}
+                          {p.code && p.product_type && <span> · </span>}
+                          {p.product_type && <span>{p.product_type}</span>}
+                          {!p.code && !p.product_type && <span>{p.unit}</span>}
+                        </div>
                       </button>
                     ))}
                   </div>
                 )}
                 {selectedProduct && (
-                  <div className="mt-1.5 flex items-center gap-2 text-xs text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
-                    <Package className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span className="flex-1">{selectedProduct.name}</span>
+                  <div className="mt-1.5 flex items-start gap-2 text-xs text-blue-700 bg-blue-50 px-3 py-2 rounded-lg border border-blue-200">
+                    <Package className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium break-words whitespace-normal leading-snug">{selectedProduct.name}</div>
+                      {(selectedProduct.code || selectedProduct.product_type) && (
+                        <div className="text-gray-400 mt-0.5">
+                          {selectedProduct.code && <span>{selectedProduct.code}</span>}
+                          {selectedProduct.code && selectedProduct.product_type && <span> · </span>}
+                          {selectedProduct.product_type && <span>{selectedProduct.product_type}</span>}
+                        </div>
+                      )}
+                    </div>
                     <button
                       onClick={() => { setSelectedProduct(null); setProductSearch(''); }}
-                      className="text-gray-400 hover:text-red-500"
+                      className="text-gray-400 hover:text-red-500 flex-shrink-0 mt-0.5"
                     >
                       <X className="w-3 h-3" />
                     </button>
