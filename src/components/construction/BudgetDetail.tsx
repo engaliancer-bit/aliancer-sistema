@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import {
   ArrowLeft, Layers, BarChart2, Edit2, Save, X,
-  Brain, TrendingUp, SlidersHorizontal, CheckCircle2, ListChecks
+  Brain, TrendingUp, SlidersHorizontal, CheckCircle2, ListChecks, Building2
 } from 'lucide-react';
 import { Budget, WBSStep, BUDGET_TYPE_CONFIG, STATUS_CONFIG, fmtBRL } from './types';
 import BudgetElementsPanel from './BudgetElementsPanel';
@@ -11,8 +11,9 @@ import QuantitativeSummaryPanel from './QuantitativeSummaryPanel';
 import FloorPlanIAPanel from './FloorPlanIAPanel';
 import BudgetGlobalParamsPanel from './BudgetGlobalParamsPanel';
 import BudgetStagesPanel from './BudgetStagesPanel';
+import GalpaoPanel from './GalpaoPanel';
 
-type Tab = 'parametros' | 'elements' | 'quantitativos' | 'ia' | 'report' | 'stages';
+type Tab = 'parametros' | 'elements' | 'quantitativos' | 'ia' | 'report' | 'stages' | 'galpao';
 
 interface Props {
   budget: Budget;
@@ -76,7 +77,8 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
     { id: 'elements', label: 'Levantamento de Itens', icon: Layers, step: 2 },
     { id: 'stages', label: 'Etapas da Obra', icon: ListChecks },
     { id: 'quantitativos', label: 'Quantitativos', icon: TrendingUp },
-    { id: 'ia', label: 'Analise IA', icon: Brain, highlight: true },
+    { id: 'galpao', label: 'Galpao Pre-Moldado', icon: Building2, highlight: true },
+    { id: 'ia', label: 'Analise IA', icon: Brain },
     { id: 'report', label: 'Relatorio', icon: BarChart2 },
   ];
 
@@ -223,6 +225,9 @@ export default function BudgetDetail({ budget: initialBudget, onBack }: Props) {
           )}
           {activeTab === 'quantitativos' && (
             <QuantitativeSummaryPanel budget={budget} wbsSteps={wbsSteps} />
+          )}
+          {activeTab === 'galpao' && (
+            <GalpaoPanel budget={budget} onRefresh={refreshBudget} />
           )}
           {activeTab === 'ia' && (
             <FloorPlanIAPanel budget={budget} wbsSteps={wbsSteps} onRefresh={refreshBudget} />

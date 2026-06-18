@@ -38,10 +38,11 @@ export default function ConstructionBudgets() {
   const [cloning, setCloning] = useState(false);
   const [cloneError, setCloneError] = useState<string | null>(null);
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<Record<string, any>>({
     customer_id: '', title: '', description: '',
     type: 'residencial' as BudgetType,
     bdi_percent: 25, validity_days: 30, notes: '',
+    galpao_vao: '', galpao_comprimento: '', galpao_pe_direito: '', galpao_espac_pilares: '',
   });
 
   const load = useCallback(async () => {
@@ -82,10 +83,18 @@ export default function ConstructionBudgets() {
         title: budget.title, description: budget.description || '',
         type: budget.type, bdi_percent: budget.bdi_percent,
         validity_days: budget.validity_days, notes: budget.notes || '',
+        galpao_vao: (budget as any).vao_galpao || '',
+        galpao_comprimento: (budget as any).comprimento_total || '',
+        galpao_pe_direito: (budget as any).pe_direito || '',
+        galpao_espac_pilares: (budget as any).espac_pilares || '',
       });
     } else {
       setEditingBudget(null);
-      setForm({ customer_id: '', title: '', description: '', type: 'residencial', bdi_percent: 25, validity_days: 30, notes: '' });
+      setForm({
+        customer_id: '', title: '', description: '', type: 'residencial', bdi_percent: 25,
+        validity_days: 30, notes: '',
+        galpao_vao: '', galpao_comprimento: '', galpao_pe_direito: '', galpao_espac_pilares: '',
+      });
     }
     setShowForm(true);
   };
@@ -126,7 +135,7 @@ export default function ConstructionBudgets() {
     if (!form.title.trim()) { setError('Titulo obrigatorio'); return; }
     setSaving(true); setError(null);
     try {
-      const payload = {
+      const payload: Record<string, any> = {
         customer_id: form.customer_id || null,
         title: form.title.trim(),
         description: form.description.trim() || null,
@@ -135,6 +144,12 @@ export default function ConstructionBudgets() {
         validity_days: form.validity_days,
         notes: form.notes.trim() || null,
       };
+      if (form.type === 'industrial') {
+        if (form.galpao_vao) payload.vao_galpao = parseFloat(form.galpao_vao);
+        if (form.galpao_comprimento) payload.comprimento_total = parseFloat(form.galpao_comprimento);
+        if (form.galpao_pe_direito) payload.pe_direito = parseFloat(form.galpao_pe_direito);
+        if (form.galpao_espac_pilares) payload.espac_pilares = parseFloat(form.galpao_espac_pilares);
+      }
       if (editingBudget) {
         await supabase.from('budgets').update(payload).eq('id', editingBudget.id);
         if (form.bdi_percent !== editingBudget.bdi_percent) {
@@ -613,6 +628,33 @@ export default function ConstructionBudgets() {
                 <textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
                   rows={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-orange-400 resize-none" />
               </div>
+
+              {form.type === 'industrial' && (
+                <div className="border-t border-gray-200 pt-4 space-y-4">
+                  <p className="text-sm font-semibold text-orange-700 flex items-center gap-1.5">
+                    <span className="w-2 h-2 bg-orange-500 rounded-full" />
+                    Variáveis do Galpão (opcional — complete após criar)
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      { key: 'galpao_vao', label: 'Vão (m)', placeholder: '12' },
+                      { key: 'galpao_comprimento', label: 'Comprimento (m)', placeholder: '36' },
+                      { key: 'galpao_pe_direito', label: 'Pé Direito (m)', placeholder: '4.5' },
+                      { key: 'galpao_espac_pilares', label: 'Espaç. Pilares (m)', placeholder: '6' },
+                    ].map(f => (
+                      <div key={f.key}>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
+                        <input type="number" min="0" step="0.1"
+                          placeholder={f.placeholder}
+                          value={(form as any)[f.key] || ''}
+                          onChange={e => setForm(p => ({ ...p, [f.key]: parseFloat(e.target.value) || '' }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-orange-400" />
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400">Você pode preencher todas as dimensões na aba "Galpão Pré-Moldado" após criar o orçamento.</p>
+                </div>
+              )}
             </div>
 
             <div className="flex gap-3 p-6 border-t bg-gray-50 rounded-b-2xl">
